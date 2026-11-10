@@ -52,9 +52,46 @@
                       placeholder="e.g. Definition" data-i18n-ph="colors.name.ph"/>
           <html:span class="annota-help" data-i18n="colors.name.help">Optional. Displayed above the fields in the selection popup.</html:span>
         </html:div>
+        <html:label class="annota-field-label" for="annota-semantic-label">
+          Highlight meaning
+        </html:label>
+        <html:div class="annota-field-stack">
+          <html:input id="annota-semantic-label" type="text"
+                      class="annota-input annota-w-md"
+                      placeholder="e.g. Important, Disagree, Must cite"/>
+          <html:span class="annota-help">
+            Your personal meaning for this highlight color. Independent of AI settings.
+          </html:span>
+        </html:div>
+        <html:div class="annota-form">
+  <html:label class="annota-field-label" for="annota-color-label-layout">
+    Color label layout
+  </html:label>
+
+  <html:select id="annota-color-label-layout" class="annota-input annota-w-md">
+    <html:option value="wrap">Horizontal – wrap</html:option>
+    <html:option value="single">Horizontal – single row</html:option>
+    <html:option value="stack">Horizontal – stacked</html:option>
+    <html:option value="slanted">Slanted</html:option>
+  </html:select>
+</html:div>
+<html:div class="annota-color-tools">
+  <html:button id="annota-color-export" type="button" class="annota-button">
+    Export color labels
+  </html:button>
+
+  <html:button id="annota-color-import" type="button" class="annota-button">
+    Import color labels
+  </html:button>
+
+  <html:input id="annota-color-import-file" type="file"
+              accept=".json,application/json" hidden="hidden"/>
+
+  <html:span id="annota-color-tools-status"
+             class="annota-status" role="status"/>
+</html:div>
       </html:div>
     </html:section>
-
     <html:section class="annota-card">
       <html:h3 class="annota-card-title"><html:span class="annota-num">1</html:span>
         <html:span data-i18n="fields.title">Fields</html:span></html:h3>

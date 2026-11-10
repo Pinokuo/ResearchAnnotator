@@ -24,7 +24,8 @@
 		});
 	}
 
-	const PREF_COLORS = "annota.colorPrompts";
+	const PREF_COLORS = "annota.colorPrompts"; // Existing AI configuration
+	const PREF_COLOR_LABELS = "annota.colorLabels"; // Independent semantic color labels
 	const PREF_PROVIDER = "annota.provider";
 	const XHTML_NS = "http://www.w3.org/1999/xhtml";
 
@@ -149,6 +150,40 @@
 		}
 		Zotero.Prefs.set(PREF_COLORS, Object.keys(clean).length ? JSON.stringify(clean) : "");
 	}
+
+	// Independent semantic labels for PDF highlight colors.
+// These are deliberately separate from AI prompts and configuration.
+function readColorLabels() {
+    try {
+        let raw = String(Zotero.Prefs.get(PREF_COLOR_LABELS) || "").trim();
+        if (!raw) return {};
+
+        let obj = JSON.parse(raw);
+        return (obj && typeof obj === "object" && !Array.isArray(obj))
+            ? obj
+            : {};
+    }
+    catch (e) {
+        return {};
+    }
+}
+
+function writeColorLabels(labels) {
+    let clean = {};
+
+    for (let hex of Object.keys(labels)) {
+        let label = String(labels[hex] || "").trim();
+
+        if (label) {
+            clean[hex] = label;
+        }
+    }
+
+    Zotero.Prefs.set(
+        PREF_COLOR_LABELS,
+        Object.keys(clean).length ? JSON.stringify(clean) : ""
+    );
+}
 
 	// Onglets. Boutons HTML + bascule de l'attribut hidden : même mécanique que
 	// le sélecteur de fournisseur ci-dessous, qui fonctionne déjà. Si le script
@@ -782,11 +817,14 @@
 		let fieldsArea = document.getElementById("annota-fields");
 		let lintBox = document.getElementById("annota-lint");
 		let labelInput = document.getElementById("annota-label");
+		let semanticLabelInput = document.getElementById("annota-semantic-label");
+
 		let editorHost = document.getElementById("annota-fields-editor");
 		let kindBox = document.getElementById("annota-kind");
 		let kindHelp = document.getElementById("annota-kind-help");
+
 		if (!textarea || !swatchBox || triggerRadios.length < 2 || !templateArea || !fieldsArea
-				|| !labelInput) {
+				|| !labelInput || !semanticLabelInput) {
 			retry(setup, tries);
 			return;
 		}
@@ -810,7 +848,38 @@
 			if (flashTimer) clearTimeout(flashTimer);
 			flashTimer = setTimeout(() => { status.textContent = ""; }, 2000);
 		}
+// Semantic labels are stored independently of AI configuration.
+let semanticSaveTimer = null;
 
+function saveSemanticLabel() {
+    let labels = readColorLabels();
+    let label = String(semanticLabelInput.value || "").trim();
+
+    if (label) {
+        labels[current] = label;
+    } else {
+        delete labels[current];
+    }
+
+    writeColorLabels(labels);
+}
+
+function saveSemanticLabelNow() {
+    if (semanticSaveTimer) {
+        clearTimeout(semanticSaveTimer);
+        semanticSaveTimer = null;
+    }
+
+    saveSemanticLabel();
+}
+
+function scheduleSemanticLabelSave() {
+    if (semanticSaveTimer) {
+        clearTimeout(semanticSaveTimer);
+    }
+
+    semanticSaveTimer = setTimeout(saveSemanticLabelNow, 800);
+}
 		function currentTrigger() {
 			let on = triggerRadios.find(r => r.checked);
 			return on && on.value === "manual" ? "manual" : "auto";
@@ -869,7 +938,11 @@
 
 		function load(hex) {
 			current = hex;
-			let entry = normalize(readColorMap()[keyOf(hex)]);
+
+				let labels = readColorLabels();
+				semanticLabelInput.value = labels[hex] || "";
+
+				let entry = normalize(readColorMap()[keyOf(hex)]);
 			textarea.value = entry ? entry.prompt : "";
 			templateArea.value = entry ? (entry.template || "") : "";
 			fieldsArea.value = entry ? (entry.fields || "") : "";
@@ -915,8 +988,10 @@
 			b.style.backgroundColor = c.hex;
 			b.addEventListener("click", () => {
 				if (current === c.hex) return;
-				saveNow();          // ne pas perdre l'édition en cours
-				load(c.hex);
+
+					saveNow();
+					saveSemanticLabelNow();
+					load(c.hex);
 			});
 			swatchBox.appendChild(b);
 		}
@@ -935,6 +1010,146 @@
 		});
 		labelInput.addEventListener("blur", saveNow);
 
+		semanticLabelInput.addEventListener("input", scheduleSemanticLabelSave);
+		semanticLabelInput.addEventListener("blur", saveSemanticLabelNow);
+		// Save and restore the color-label display layout.
+let colorLabelLayoutInput =
+    document.getElementById("annota-color-label-layout");
+
+if (colorLabelLayoutInput) {
+    colorLabelLayoutInput.value =
+        Zotero.Prefs.get("annota.colorLabelLayout") || "wrap";
+
+    colorLabelLayoutInput.addEventListener("change", () => {
+        Zotero.Prefs.set(
+            "annota.colorLabelLayout",
+            colorLabelLayoutInput.value
+        );
+    });
+}
+// Import/export semantic color labels independently of AI configuration.
+let exportLabelsBtn = document.getElementById("annota-color-export");
+let importLabelsBtn = document.getElementById("annota-color-import");
+let importLabelsFile = document.getElementById("annota-color-import-file");
+let colorToolsStatus = document.getElementById("annota-color-tools-status");
+
+function colorToolsMessage(message) {
+    if (!colorToolsStatus) return;
+    colorToolsStatus.textContent = message;
+}
+
+if (exportLabelsBtn) {
+    exportLabelsBtn.addEventListener("click", async () => {
+        try {
+            saveSemanticLabelNow();
+
+            let data = {
+                version: 1,
+                labels: readColorLabels()
+            };
+
+            let { FilePicker } = ChromeUtils.importESModule(
+                "chrome://zotero/content/modules/filePicker.mjs"
+            );
+
+            let picker = new FilePicker();
+
+            picker.init(
+                window,
+                "Save Annota color labels",
+                picker.modeSave
+            );
+
+            picker.appendFilter("JSON files", "*.json");
+            picker.defaultString = "annota-color-labels.json";
+
+            let result = await picker.show();
+
+            if (result !== picker.returnOK &&
+                result !== picker.returnReplace) {
+                colorToolsMessage("Export cancelled.");
+                return;
+            }
+
+            let path = picker.file;
+
+            if (!path.toLowerCase().endsWith(".json")) {
+                path += ".json";
+            }
+
+            await Zotero.File.putContentsAsync(
+                path,
+                JSON.stringify(data, null, 2)
+            );
+
+            colorToolsMessage("Saved successfully: " + path);
+        }
+        catch (e) {
+            colorToolsMessage("Export failed: " + e.message);
+            Zotero.logError(e);
+        }
+    });
+}
+
+if (importLabelsBtn && importLabelsFile) {
+    importLabelsBtn.addEventListener("click", () => {
+        importLabelsFile.click();
+    });
+
+    importLabelsFile.addEventListener("change", () => {
+        let file = importLabelsFile.files && importLabelsFile.files[0];
+        if (!file) return;
+
+        let reader = new FileReader();
+
+        reader.onload = () => {
+            try {
+                let imported = JSON.parse(String(reader.result || ""));
+                let importedLabels = imported.labels || imported;
+
+                if (!importedLabels ||
+                    typeof importedLabels !== "object" ||
+                    Array.isArray(importedLabels)) {
+                    throw new Error("Invalid color-label format.");
+                }
+
+                let validColors = new Set(palette.map(c => c.hex.toLowerCase()));
+                let clean = {};
+
+                for (let [hex, value] of Object.entries(importedLabels)) {
+                    let normalizedHex = String(hex).toLowerCase();
+                    let label = String(value || "").trim();
+
+                    if (validColors.has(normalizedHex) && label) {
+                        clean[normalizedHex] = label;
+                    }
+                }
+
+                writeColorLabels(clean);
+
+                // Refresh the currently displayed color label.
+                semanticLabelInput.value = clean[current] || "";
+
+                colorToolsMessage(
+                    "Imported " + Object.keys(clean).length + " color labels."
+                );
+            }
+            catch (e) {
+                colorToolsMessage("Import failed: " + e.message);
+            }
+            finally {
+                importLabelsFile.value = "";
+            }
+        };
+
+        reader.onerror = () => {
+            colorToolsMessage("Could not read the selected file.");
+            importLabelsFile.value = "";
+        };
+
+        reader.readAsText(file);
+    });
+}
 		// --- Choix du mode (auto / manuel) ---
 		// Ne sauvegarde que si la couleur a déjà un prompt (sinon rien à régler).
 		for (let r of triggerRadios) {
@@ -983,7 +1198,9 @@
 				b.addEventListener("click", () => {
 					let k = b.getAttribute("data-kind") === "image" ? "image" : "text";
 					if (k === kind) return;
-					saveNow();          // l'édition en cours appartient à l'ancien type
+
+					saveNow();
+					saveSemanticLabelNow();
 					kind = k;
 					for (let x of kindBox.querySelectorAll("[data-kind]")) {
 						x.setAttribute("aria-pressed", x === b ? "true" : "false");

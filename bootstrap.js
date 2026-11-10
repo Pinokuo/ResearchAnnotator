@@ -591,8 +591,13 @@ Annota = {
 			if (event !== "add" || type !== "item") return;
 			let t0 = Date.now();
 			for (let id of ids) {
-				// fire-and-forget : ne pas bloquer la transaction Zotero
-				Annota.handleItem(id, t0).catch(e => log("handleItem: " + e));
+				// Save research metadata independently of AI processing.
+				Annota.handleResearchMetadata(id)
+					.catch(e => log("handleResearchMetadata: " + e));
+
+				// Existing Annota processing remains unchanged.
+				Annota.handleItem(id, t0)
+					.catch(e => log("handleItem: " + e));
 			}
 		}
 	},
@@ -603,7 +608,570 @@ Annota = {
 		if (this.hasImageEntries()) types.push("image");
 		return types;
 	},
+	// ResearchAnnotator metadata storage.
+// One managed Zotero note per library.
 
+RESEARCH_METADATA_TITLE: "ResearchAnnotator Metadata",
+RESEARCH_METADATA_MARKER: "research-annotator-metadata-v1",
+
+async _findResearchMetadataNote(libraryID) {
+    const search = new Zotero.Search();
+    search.libraryID = libraryID;
+
+    search.addCondition("itemType", "is", "note");
+
+    const ids = await search.search();
+
+    for (const id of ids) {
+        const note = Zotero.Items.get(id);
+
+        if (!note || !note.isNote?.()) continue;
+
+        const content = note.getNote();
+
+        if (content.includes(this.RESEARCH_METADATA_MARKER)) {
+            return note;
+        }
+    }
+
+    return null;
+},
+async _getOrCreatePaperResearchNote(annotation) {
+    if (!annotation?.parentID) {
+        throw new Error("Annotation has no parent attachment.");
+    }
+
+    // Find the PDF attachment.
+    const attachment = await Zotero.Items.getAsync(
+        annotation.parentID
+    );
+
+    if (!attachment || !attachment.isAttachment?.()) {
+        throw new Error("Could not find annotation's PDF attachment.");
+    }
+
+    // Find the actual paper, if the PDF belongs to one.
+    const paper = attachment.parentID
+        ? await Zotero.Items.getAsync(attachment.parentID)
+        : attachment;
+
+    if (!paper) {
+        throw new Error("Could not resolve the parent paper.");
+    }
+
+    const libraryID = annotation.libraryID;
+    const paperKey = paper.key;
+
+    const marker =
+        "research-annotator-paper-note-v1:" + paperKey;
+
+    // Search existing Zotero notes for this paper's research note.
+    const search = new Zotero.Search();
+    search.libraryID = libraryID;
+    search.addCondition("itemType", "is", "note");
+
+    const ids = await search.search();
+
+    for (const id of ids) {
+        const existing = Zotero.Items.get(id);
+
+        if (!existing || !existing.isNote?.()) continue;
+
+        const content = existing.getNote() || "";
+
+        if (content.includes(marker)) {
+            return {
+                note: existing,
+                paper,
+                marker
+            };
+        }
+    }
+
+    // Create one research note for this paper.
+    const note = new Zotero.Item("note");
+    note.libraryID = libraryID;
+    note.parentID = paper.id;
+
+    const title = paper.getField("title") || "Untitled paper";
+
+    const escapedTitle = title
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+    note.setNote(`
+        <h1>Research Notes — ${escapedTitle}</h1>
+        <div>${marker}</div>
+        <p>Research notes maintained by ResearchAnnotator.</p>
+        <hr>
+    `);
+
+    await note.saveTx();
+
+    log(
+        "Created paper research note: "
+        + title
+        + " | Key: "
+        + note.key
+    );
+
+    return {
+        note,
+        paper,
+        marker
+    };
+},
+async _getResearchNotes(libraryID) {
+    const search = new Zotero.Search();
+    search.libraryID = libraryID;
+    search.addCondition("itemType", "is", "note");
+
+    const ids = await search.search();
+    const researchNotes = [];
+
+    const marker = "research-annotator-research-note-v1";
+
+    for (const id of ids) {
+        const note = Zotero.Items.get(id);
+
+        if (!note || !note.isNote?.()) continue;
+
+        const content = note.getNote() || "";
+
+        // Only include notes created by ResearchAnnotator.
+        if (!content.includes(marker)) continue;
+
+        // Extract the note title from its first H1 element.
+        const titleMatch = content.match(/<h1[^>]*>(.*?)<\/h1>/i);
+
+        let title = titleMatch
+            ? titleMatch[1].replace(/<[^>]*>/g, "").trim()
+            : "Untitled research note";
+
+        researchNotes.push({
+            key: note.key,
+            title: title
+        });
+    }
+
+    researchNotes.sort((a, b) =>
+        a.title.localeCompare(b.title, undefined, {
+            sensitivity: "base"
+        })
+    );
+
+    return researchNotes;
+},
+
+async _createResearchNote(libraryID, title) {
+    title = (title || "").trim();
+
+    if (!title) {
+        throw new Error("Research note title cannot be empty.");
+    }
+
+    // Prevent duplicate research-note titles (case-insensitive).
+    const existingNotes = await this._getResearchNotes(libraryID);
+
+    const existing = existingNotes.find(note =>
+        note.title.toLowerCase() === title.toLowerCase()
+    );
+
+    if (existing) {
+        return existing;
+    }
+
+    const escapedTitle = title
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+
+    const html = `
+        <h1>${escapedTitle}</h1>
+        <div>research-annotator-research-note-v1</div>
+        <p></p>
+    `;
+
+    const note = new Zotero.Item("note");
+    note.libraryID = libraryID;
+    note.setNote(html);
+
+    await note.saveTx();
+
+    log("Research note created: " + title + " | Key: " + note.key);
+
+    return {
+        key: note.key,
+        title: title
+    };
+},
+async _syncPaperResearchNote(annotation) {
+    if (!annotation || !annotation.isAnnotation?.()) return;
+
+    const { note } = await this._getOrCreatePaperResearchNote(annotation);
+
+    const libraryID = annotation.libraryID;
+    const annotationKey = `${libraryID}:${annotation.key}`;
+
+    let metadata = await this._getResearchMetadata(libraryID);
+    let saved = metadata.annotations[annotationKey] || {};
+
+    let comment = annotation.annotationComment || "";
+
+    // Migrate comments saved by the previous ResearchAnnotator version.
+    if (saved.researchComment) {
+        if (!comment) {
+            annotation.annotationComment = saved.researchComment;
+            await annotation.saveTx();
+            comment = annotation.annotationComment || "";
+        }
+
+        await this._updateResearchMetadata(libraryID, currentMetadata => {
+            const currentSaved =
+                currentMetadata.annotations[annotationKey];
+
+            if (!currentSaved?.researchComment) {
+                return false;
+            }
+
+            delete currentSaved.researchComment;
+            return true;
+        });
+    }
+
+    // Read the latest themes and experiments before rebuilding the paper note.
+    metadata = await this._getResearchMetadata(libraryID);
+    saved = metadata.annotations[annotationKey] || {};
+
+    const escapeHTML = value =>
+        String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+
+    const text = annotation.annotationText || "";
+
+    const themes = saved.themes || [];
+    const experiments = saved.experiments || [];
+
+    let page = "";
+
+    try {
+        const position = typeof annotation.annotationPosition === "string"
+            ? JSON.parse(annotation.annotationPosition)
+            : annotation.annotationPosition;
+
+        if (typeof position?.pageIndex === "number") {
+            page = String(position.pageIndex + 1);
+        }
+    }
+    catch (e) {
+        log("Could not read annotation page number: " + e);
+    }
+
+    const entryStart = `RA_ENTRY_START:${annotationKey}`;
+    const entryEnd = `RA_ENTRY_END:${annotationKey}`;
+
+    const entryHTML = `
+        <div>
+            <p>${entryStart}</p>
+            <h2>${escapeHTML(text || "Image annotation")}</h2>
+            ${page ? `<p><strong>Page:</strong> ${page}</p>` : ""}
+            ${comment ? `<p><strong>Research comment:</strong> ${escapeHTML(comment)}</p>` : ""}
+            ${themes.length
+                ? `<p><strong>Themes:</strong> ${themes.map(escapeHTML).join(", ")}</p>`
+                : ""}
+            ${experiments.length
+                ? `<p><strong>Experiments:</strong> ${experiments.map(escapeHTML).join(", ")}</p>`
+                : ""}
+            <p>${entryEnd}</p>
+        </div>
+    `;
+
+    let content = note.getNote() || "";
+
+    // Replace the existing entry if this annotation was already synchronized.
+    const escapedKey = annotationKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    const entryPattern = new RegExp(
+        `<div>\\s*<p>RA_ENTRY_START:${escapedKey}<\\/p>[\\s\\S]*?<p>RA_ENTRY_END:${escapedKey}<\\/p>\\s*<\\/div>`,
+        "i"
+    );
+
+    if (entryPattern.test(content)) {
+        content = content.replace(entryPattern, entryHTML);
+    }
+    else {
+        content += entryHTML;
+    }
+
+    note.setNote(content);
+    await note.saveTx();
+
+    log("Research note synchronized for annotation " + annotation.key);
+},
+async _getResearchMetadata(libraryID) {
+    const note = await this._findResearchMetadataNote(libraryID);
+
+if (!note) {
+    return {
+        version: 1,
+        themes: [],
+        experiments: [],
+        annotations: {}
+    };
+}
+
+    try {
+        const content = note.getNote();
+
+        // Zotero removes custom HTML attributes from note elements.
+        // Identify our JSON using the unique marker and following <pre>.
+        const markerIndex = content.indexOf(
+            this.RESEARCH_METADATA_MARKER
+        );
+
+        if (markerIndex === -1) {
+            throw new Error("Metadata marker not found");
+        }
+
+        const afterMarker = content.substring(markerIndex);
+
+        const match = afterMarker.match(
+            /<pre[^>]*>([\s\S]*?)<\/pre>/i
+        );
+
+        if (!match) {
+            throw new Error("Metadata JSON block not found");
+        }
+
+        const doc = new DOMParser().parseFromString(
+            match[1],
+            "text/html"
+        );
+
+        const json = doc.body.textContent
+            .replace(/\u00a0/g, " ")
+            .trim();
+
+        const data = JSON.parse(json);
+
+return {
+    version: 1,
+
+    themes: Array.isArray(data.themes)
+        ? data.themes
+        : [],
+
+    experiments: Array.isArray(data.experiments)
+        ? data.experiments
+        : [],
+
+    annotations:
+        data.annotations && typeof data.annotations === "object"
+            ? data.annotations
+            : {}
+};
+    }
+    catch (e) {
+        log("Reading research metadata failed: " + e);
+        throw e;
+    }
+},
+
+async _saveResearchMetadata(libraryID, data) {
+    let note = await this._findResearchMetadataNote(libraryID);
+
+    const json = JSON.stringify(data, null, 2);
+
+    // Escape JSON before placing it inside HTML.
+    const escapedJSON = json
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+    const html = `
+        <h1>ResearchAnnotator Metadata</h1>
+        <p>
+            This note is maintained automatically by ResearchAnnotator.
+            It stores research themes, experiments, and annotation
+            relationships.
+        </p>
+        <p>
+            Do not edit the structured data below manually.
+        </p>
+        <hr>
+        <div>${this.RESEARCH_METADATA_MARKER}</div>
+        <pre data-research-annotator="metadata">${escapedJSON}</pre>
+    `;
+
+    // Create the managed note if it doesn't exist.
+    if (!note) {
+        note = new Zotero.Item("note");
+        note.libraryID = libraryID;
+    }
+
+    note.setNote(html);
+    await note.saveTx();
+
+    log(
+        "Research metadata saved. Library: "
+        + libraryID
+        + " | Note: "
+        + note.key
+    );
+
+    return note;
+},
+async _updateResearchMetadata(libraryID, updater) {
+    if (!this._researchMetadataQueues) {
+        this._researchMetadataQueues = new Map();
+    }
+
+    const queues = this._researchMetadataQueues;
+    const previous = queues.get(libraryID) || Promise.resolve();
+
+    const current = previous
+        .catch(e => {
+            log("Previous metadata update failed; continuing queue: " + e);
+        })
+        .then(async () => {
+            const metadata = await this._getResearchMetadata(libraryID);
+            const shouldSave = await updater(metadata);
+
+            if (shouldSave === false) {
+                return metadata;
+            }
+
+            await this._saveResearchMetadata(libraryID, metadata);
+            return metadata;
+        });
+
+    queues.set(libraryID, current);
+
+    try {
+        return await current;
+    }
+    finally {
+        if (queues.get(libraryID) === current) {
+            queues.delete(libraryID);
+        }
+    }
+},
+
+async handleResearchMetadata(id) {
+    let item = await Zotero.Items.getAsync(id);
+
+    if (!item || !item.isAnnotation || !item.isAnnotation()) return;
+
+    let pending = this._pendingResearch;
+    if (!pending) return;
+
+    // Expire stale popup data after 10 minutes.
+    if (Date.now() - pending.ts > 600000) {
+        this._pendingResearch = null;
+        return;
+    }
+
+    let annotationText = this._normText(item.annotationText || "");
+    let selectedText = this._normText(pending.text || "");
+
+    // Match the newly created annotation to the selected text.
+    let matches =
+        annotationText &&
+        selectedText &&
+        (
+            annotationText === selectedText ||
+            annotationText.startsWith(selectedText.slice(0, 40)) ||
+            selectedText.startsWith(annotationText.slice(0, 40))
+        );
+
+    if (!matches) return;
+
+    let comment = String(pending.values?.comment || "").trim();
+
+    let tags = [
+        ...new Set(
+            (pending.values?.tags || [])
+                .map(tag => String(tag).trim())
+                .filter(Boolean)
+        )
+    ];
+
+    let themes = [
+        ...new Set(
+            (pending.values?.themes || [])
+                .map(value => String(value).trim())
+                .filter(Boolean)
+        )
+    ];
+
+    let experiments = [
+        ...new Set(
+            (pending.values?.experiments || [])
+                .map(value => String(value).trim())
+                .filter(Boolean)
+        )
+    ];
+
+    let changed = false;
+
+    // Save the ResearchAnnotator comment in Zotero's native field.
+    if ((item.annotationComment || "") !== comment) {
+        item.annotationComment = comment;
+        changed = true;
+    }
+
+    // Apply native Zotero tags.
+    let existingTags = new Set(
+        item.getTags().map(tag => tag.tag)
+    );
+
+    for (let tag of tags) {
+        if (!existingTags.has(tag)) {
+            item.addTag(tag);
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        await item.saveTx();
+    }
+
+    // Save research themes and experiments through the shared queue.
+    if (themes.length || experiments.length) {
+        const libraryID = item.libraryID;
+        const annotationKey = `${libraryID}:${item.key}`;
+
+        await this._updateResearchMetadata(libraryID, metadata => {
+            metadata.themes = [
+                ...new Set([...metadata.themes, ...themes])
+            ];
+
+            metadata.experiments = [
+                ...new Set([...metadata.experiments, ...experiments])
+            ];
+
+            const annotationMetadata = {
+                ...(metadata.annotations[annotationKey] || {}),
+                themes,
+                experiments
+            };
+
+            delete annotationMetadata.researchComment;
+            metadata.annotations[annotationKey] = annotationMetadata;
+        });
+    }
+
+    await this._syncPaperResearchNote(item);
+    this._pendingResearch = null;
+
+    log("Research metadata saved for annotation " + id);
+},
 	async handleItem(id, notifiedAt) {
 		if (this.inProgress.has(id)) return;
 		let tEnter = Date.now();
@@ -2839,6 +3407,7 @@ Annota = {
 
 	_selectionListener: null,
 	_pendingFields: null,          // { text, values, ts, color }
+	_pendingResearch: null,
 	_lastColor: null,              // dernière couleur réellement traitée
 
 	// Union des champs de toutes les couleurs, dédoublonnée par nom.
@@ -2876,6 +3445,749 @@ Annota = {
 		}
 		return withFields[0].hex;
 	},
+
+	// Read semantic color labels independently of AI configuration.
+getColorLabels() {
+    try {
+        let raw = getPref("colorLabels", "");
+        if (!raw) return {};
+
+        let labels = typeof raw === "string" ? JSON.parse(raw) : raw;
+
+        if (!labels || typeof labels !== "object" || Array.isArray(labels)) {
+            return {};
+        }
+
+        return labels;
+    }
+    catch (e) {
+        log("getColorLabels: " + e);
+        return {};
+    }
+},
+
+// Display semantic labels in Zotero's text selection popup.
+// Display semantic labels directly beside Zotero's original color buttons.
+// Display semantic labels directly beside Zotero's native color buttons.
+// Display semantic labels as the actual clickable color buttons.
+// Display semantic labels as the actual clickable color buttons.
+_renderColorLabels({ doc }) {
+    if (!doc) return;
+
+    let popup = doc.querySelector(".selection-popup");
+    if (!popup) return;
+
+    let colorsContainer = popup.querySelector(".colors");
+    if (!colorsContainer) return;
+
+    let buttons = Array.from(
+        colorsContainer.querySelectorAll(".color-button")
+    );
+
+    if (!buttons.length) return;
+
+    let labels = this.getColorLabels();
+
+    let layout = String(
+        getPref("colorLabelLayout", "wrap") || "wrap"
+    );
+
+    if (!["wrap", "single", "stack", "slanted"].includes(layout)) {
+        layout = "wrap";
+    }
+
+    // Give the popup enough room for its contents.
+    popup.style.width = "max-content";
+    popup.style.height = "auto";
+    popup.style.minHeight = "0";
+    popup.style.maxHeight = "none";
+    popup.style.overflow = "visible";
+    popup.style.maxWidth =
+        layout === "single" ? "none" : "calc(100vw - 24px)";
+
+    colorsContainer.style.display = "flex";
+    colorsContainer.style.alignItems = "center";
+    colorsContainer.style.boxSizing = "border-box";
+    colorsContainer.style.overflow = "visible";
+    colorsContainer.style.gap = layout === "slanted" ? "2px" : "8px";
+
+    colorsContainer.style.flexDirection =
+        layout === "stack" ? "column" : "row";
+
+    colorsContainer.style.flexWrap =
+        layout === "wrap" || layout === "slanted" ? "wrap" : "nowrap";
+
+    colorsContainer.style.width =
+        layout === "single" ? "max-content" : "100%";
+
+    // Prevent the popup from clipping rotated labels.
+    colorsContainer.style.paddingTop =
+        layout === "slanted" ? "22px" : "5px";
+
+    colorsContainer.style.paddingBottom =
+        layout === "slanted" ? "25px" : "5px";
+
+    buttons.forEach((btn, index) => {
+        let color = this.COLORS[index];
+        if (!color) return;
+
+        let label = String(
+            labels[color.hex] || color.name || "Color"
+        ).trim();
+
+        // Remove any previous Annota label.
+        let oldLabel = btn.querySelector(".annota-color-button-label");
+        if (oldLabel) oldLabel.remove();
+
+        // Remove Zotero's original visible color swatch.
+        // The button itself and its native click handlers remain.
+        Array.from(btn.children).forEach(child => child.remove());
+
+        btn.style.display = "inline-flex";
+        btn.style.alignItems = "center";
+        btn.style.justifyContent = "center";
+        btn.style.width = "auto";
+        btn.style.height = "auto";
+        btn.style.minWidth = "0";
+        btn.style.minHeight = "0";
+        btn.style.padding = "0";
+        btn.style.margin = "0";
+        btn.style.border = "none";
+        btn.style.background = "transparent";
+        btn.style.backgroundImage = "none";
+        btn.style.boxShadow = "none";
+        btn.style.overflow = "visible";
+        btn.style.flex = "none";
+        btn.style.cursor = "pointer";
+
+        // Calculate readable text color.
+        let hex = color.hex.replace("#", "");
+        let r = parseInt(hex.substring(0, 2), 16);
+        let g = parseInt(hex.substring(2, 4), 16);
+        let b = parseInt(hex.substring(4, 6), 16);
+
+        let brightness = (r * 299 + g * 587 + b * 114) / 1000;
+        let textColor = brightness > 150 ? "#222222" : "#ffffff";
+
+        let labelNode = doc.createElement("span");
+        labelNode.className = "annota-color-button-label";
+        labelNode.textContent = label;
+
+        labelNode.style.cssText =
+            "display:inline-block;"
+            + "box-sizing:border-box;"
+            + "padding:4px 8px;"
+            + "border-radius:4px;"
+            + "background-color:" + color.hex + ";"
+            + "color:" + textColor + ";"
+            + "font-size:11px;"
+            + "font-weight:600;"
+            + "line-height:1.3;"
+            + "white-space:nowrap;"
+            + "pointer-events:none;"
+            + "transition:filter 120ms ease, transform 120ms ease, box-shadow 120ms ease;";
+
+        if (layout === "slanted") {
+            labelNode.style.transform = "rotate(-18deg)";
+            labelNode.style.transformOrigin = "center center";
+
+            btn.style.marginRight = "-9px";
+            btn.style.marginBottom = "2px";
+        }
+
+        btn.appendChild(labelNode);
+
+        // Make the label visually respond to hovering and keyboard focus.
+        btn.addEventListener("mouseenter", () => {
+            labelNode.style.filter = "brightness(1.15)";
+            labelNode.style.transform =
+                layout === "slanted"
+                    ? "rotate(-18deg) scale(1.06)"
+                    : "scale(1.06)";
+            labelNode.style.boxShadow =
+                "0 2px 6px rgba(0,0,0,0.25)";
+        });
+
+        btn.addEventListener("mouseleave", () => {
+            labelNode.style.filter = "none";
+            labelNode.style.transform =
+                layout === "slanted"
+                    ? "rotate(-18deg)"
+                    : "none";
+            labelNode.style.boxShadow = "none";
+        });
+
+        btn.addEventListener("focus", () => {
+            labelNode.style.outline = "2px solid currentColor";
+            labelNode.style.outlineOffset = "2px";
+        });
+
+        btn.addEventListener("blur", () => {
+            labelNode.style.outline = "none";
+        });
+
+        // Preserve the original tooltip.
+        if (!btn.hasAttribute("data-annota-original-title")) {
+            btn.setAttribute(
+                "data-annota-original-title",
+                btn.getAttribute("title") || color.name
+            );
+        }
+
+        btn.setAttribute("title", label);
+        btn.setAttribute("aria-label", label);
+    });
+
+// Recalculate popup height after labels are rendered.
+let win = doc.defaultView;
+
+let schedule = win?.requestAnimationFrame
+    ? win.requestAnimationFrame.bind(win)
+    : (callback) => setTimeout(callback, 0);
+
+schedule(() => {
+    let contentHeight = colorsContainer.scrollHeight;
+
+    popup.style.height = "auto";
+    popup.style.minHeight = Math.max(contentHeight, 0) + "px";
+    popup.style.overflow = "visible";
+});
+},
+// Add optional research annotation fields below the color buttons.
+_renderResearchCapture({ doc, params }) {
+    if (!doc) return;
+
+    let popup = doc.querySelector(".selection-popup");
+    if (!popup) return;
+
+    let colorsContainer = popup.querySelector(".colors");
+    if (!colorsContainer) return;
+
+    // Prevent duplicate fields.
+    if (popup.querySelector(".annota-research-capture")) return;
+
+    // Identify the library containing the selected PDF.
+    const reader = (Zotero.Reader?._readers || []).find(
+        reader => reader?._iframeWindow?.document === doc
+    );
+
+    const libraryID = reader?._item?.libraryID;
+
+    this._ensureFormStyles(doc);
+
+let container = doc.createElement("div");
+container.className = this.FORM_CLASS + " annota-research-capture";
+
+    container.style.cssText =
+        "width:100%;box-sizing:border-box;"
+        + "margin-top:10px;padding-top:8px;"
+        + "border-top:1px solid rgba(128,128,128,.3);"
+        + "display:flex;flex-direction:column;gap:7px;";
+
+    let heading = doc.createElement("div");
+    heading.textContent = "Research annotation";
+    heading.style.cssText =
+        "font-size:11px;font-weight:600;opacity:.8;";
+
+    container.appendChild(heading);
+
+    // Consistent field creation.
+    const createField = (labelText, control) => {
+        let field = doc.createElement("div");
+
+        field.style.cssText =
+            "display:flex;flex-direction:column;gap:3px;";
+
+        let label = doc.createElement("label");
+        label.textContent = labelText;
+        label.style.cssText =
+            "font-size:10px;font-weight:600;opacity:.75;";
+
+        field.appendChild(label);
+        field.appendChild(control);
+        container.appendChild(field);
+
+        return control;
+    };
+
+    const inputStyle =
+        "width:100%;box-sizing:border-box;"
+        + "font:inherit;font-size:11px;padding:6px;"
+        + "border:1px solid rgba(128,128,128,.4);"
+        + "border-radius:4px;";
+
+    // Personal research comment.
+    let comment = doc.createElement("textarea");
+    comment.className = "annota-research-comment";
+    comment.placeholder =
+        "Why is this passage important? Add your thoughts...";
+    comment.rows = 2;
+
+    comment.style.cssText =
+        inputStyle + "resize:vertical;";
+
+    createField("Comment (optional)", comment);
+this._shieldFromReaderShortcuts(comment, "textarea");
+    // Native Zotero tags.
+    let tags = doc.createElement("input");
+    tags.className = "annota-research-tags";
+    tags.type = "text";
+    tags.placeholder = "Add tags, separated by commas...";
+    tags.style.cssText = inputStyle;
+
+    createField("Zotero Tags (optional)", tags);
+
+    // Create reusable research fields.
+    const createResearchInput = (label, fieldName) => {
+        const input = doc.createElement("input");
+
+        input.type = "text";
+        input.className = "annota-research-" + fieldName;
+        input.placeholder = "Enter values separated by commas...";
+        input.style.cssText = inputStyle;
+
+        const datalist = doc.createElement("datalist");
+        datalist.id =
+            "annota-" + fieldName + "-" + Date.now();
+
+        input.setAttribute("list", datalist.id);
+
+        createField(label, input);
+        container.appendChild(datalist);
+
+        return { input, datalist };
+    };
+
+    const themesField = createResearchInput(
+        "Research themes (optional)",
+        "themes"
+    );
+
+    const experimentsField = createResearchInput(
+        "Experiments (optional)",
+        "experiments"
+    );
+
+    // Convert comma-separated input into unique values.
+    const parseValues = value => [
+        ...new Set(
+            value
+                .split(",")
+                .map(v => v.trim())
+                .filter(Boolean)
+        )
+    ];
+
+    // Keep all research information together until Zotero
+    // creates the actual annotation.
+    const syncResearchData = () => {
+        this._pendingResearch = {
+            text: params?.annotation?.text || "",
+
+            values: {
+                comment: comment.value.trim(),
+                tags: parseValues(tags.value),
+                themes: parseValues(themesField.input.value),
+                experiments: parseValues(experimentsField.input.value)
+            },
+
+            ts: Date.now()
+        };
+    };
+
+    [
+        comment,
+        tags,
+        themesField.input,
+        experimentsField.input
+    ].forEach(input => {
+        input.addEventListener("input", syncResearchData);
+        input.addEventListener("change", syncResearchData);
+    });
+
+    // Restore values if Zotero rerenders the selection popup.
+    const pending = this._pendingResearch;
+
+    if (pending && pending.text === (params?.annotation?.text || "")) {
+        comment.value = pending.values.comment || "";
+        tags.value = (pending.values.tags || []).join(", ");
+
+        themesField.input.value =
+            (pending.values.themes || []).join(", ");
+
+        experimentsField.input.value =
+            (pending.values.experiments || []).join(", ");
+    }
+
+    // Load reusable themes and experiments from the library.
+    if (libraryID != null) {
+        (async () => {
+            try {
+                const metadata = await this._getResearchMetadata(libraryID);
+
+                const populateSuggestions = (datalist, values) => {
+                    datalist.replaceChildren();
+
+                    for (const value of values) {
+                        const option = doc.createElement("option");
+                        option.value = value;
+                        datalist.appendChild(option);
+                    }
+                };
+
+                populateSuggestions(
+                    themesField.datalist,
+                    metadata.themes
+                );
+
+                populateSuggestions(
+                    experimentsField.datalist,
+                    metadata.experiments
+                );
+            }
+            catch (e) {
+                log("Loading research suggestions failed: " + e);
+            }
+        })();
+    }
+    else {
+        log("Could not determine library ID for research capture");
+    }
+
+    // Insert below Highlight / Underline controls.
+    const controlsContainer = popup.querySelector(".tool-toggle");
+    const insertionPoint = controlsContainer || colorsContainer;
+
+    insertionPoint.parentNode.insertBefore(
+        container,
+        insertionPoint.nextSibling
+    );
+},
+// Monitor Zotero readers for the popup shown when clicking an existing annotation.
+_startAnnotationPopupMonitor() {
+    if (this._annotationPopupScanTimer) return;
+
+    this._annotationPopupScanTimer = setInterval(() => {
+        try {
+            const readers = Zotero.Reader?._readers || [];
+
+            for (const reader of readers) {
+                const doc = reader?._iframeWindow?.document;
+                if (!doc) continue;
+
+                const popup = doc.querySelector(".annotation-popup");
+                if (!popup) continue;
+
+                const annotation =
+                    reader._internalReader?._state
+                        ?.primaryViewAnnotationPopup?.annotation;
+
+                if (!annotation?.id) continue;
+
+		const libraryID =
+			annotation.libraryID ?? reader._item?.libraryID;
+
+		if (libraryID == null) {
+			log("Could not resolve annotation library ID: " + annotation.id);
+			continue;
+		}
+
+		this._renderExistingAnnotationResearch({
+			doc,
+			popup,
+			annotation: {
+				...annotation,
+				libraryID
+			}
+		});
+            }
+        }
+        catch (e) {
+            log("Annotation popup monitor: " + e);
+        }
+    }, 500);
+},
+
+
+// Add research fields to the popup for an existing annotation.
+
+_renderExistingAnnotationResearch({ doc, popup, annotation }) {
+    if (!doc || !popup || !annotation?.id) return;
+
+    const annotationKey = `${annotation.libraryID}:${annotation.id}`;
+
+    const item = Zotero.Items.getByLibraryAndKey(
+        annotation.libraryID,
+        annotation.id
+    );
+
+    if (!item || !item.isAnnotation?.()) {
+        log("Could not find Zotero annotation: " + annotation.id);
+        return;
+    }
+
+    // Keep Zotero's native comment editor and native Tags button.
+    const nativeComment = popup.querySelector(".preview > .comment");
+    if (nativeComment) nativeComment.style.display = "";
+
+    const nativeTags = popup.querySelector("button.tags");
+    if (nativeTags) nativeTags.style.display = "";
+
+    let container = popup.querySelector(".annota-existing-research");
+
+if (container?.dataset.annotationKey === annotationKey) {
+    return;
+}
+
+if (container) container.remove();
+
+this._ensureFormStyles(doc);
+
+container = doc.createElement("div");
+container.className = this.FORM_CLASS + " annota-existing-research";
+    container.dataset.annotationKey = annotationKey;
+
+    container.style.cssText =
+        "width:100%;box-sizing:border-box;"
+        + "padding:9px 10px;"
+        + "border-top:1px solid rgba(128,128,128,.3);"
+        + "display:flex;flex-direction:column;gap:8px;";
+
+    const heading = doc.createElement("div");
+    heading.textContent = "Research metadata";
+    heading.style.cssText =
+        "font-size:11px;font-weight:600;opacity:.8;";
+
+    container.appendChild(heading);
+
+    const createField = (labelText, fieldName, suggestions) => {
+        const wrapper = doc.createElement("div");
+
+        wrapper.style.cssText =
+            "display:flex;flex-direction:column;gap:3px;";
+
+        const label = doc.createElement("label");
+        label.textContent = labelText;
+        label.style.cssText =
+            "font-size:11px;font-weight:600;";
+
+        const input = doc.createElement("input");
+        input.type = "text";
+        input.className = "annota-research-field";
+        input.dataset.field = fieldName;
+        input.placeholder = "Enter values separated by commas";
+        input.style.cssText =
+            "width:100%;box-sizing:border-box;"
+            + "padding:5px 7px;"
+            + "border:1px solid rgba(128,128,128,.4);"
+            + "border-radius:4px;"
+            + "background:var(--fill-quinary);"
+            + "color:var(--fill-primary);"
+            + "font-size:12px;";
+
+        const list = doc.createElement("datalist");
+        list.id =
+            "annota-" + fieldName + "-" + annotation.id;
+
+        for (const value of suggestions) {
+            const option = doc.createElement("option");
+            option.value = value;
+            list.appendChild(option);
+        }
+
+        input.setAttribute("list", list.id);
+
+        wrapper.appendChild(label);
+        wrapper.appendChild(input);
+        wrapper.appendChild(list);
+
+        container.appendChild(wrapper);
+
+        return input;
+    };
+
+    const themesInput = createField(
+        "Research themes",
+        "themes",
+        []
+    );
+
+    const experimentsInput = createField(
+        "Experiments",
+        "experiments",
+        []
+    );
+    const parseValues = (value) => {
+        return [...new Set(
+            value
+                .split(",")
+                .map(v => v.trim())
+                .filter(Boolean)
+        )];
+    };
+
+const saveResearchFields = () => {
+    const themesValue = themesInput.value;
+    const experimentsValue = experimentsInput.value;
+
+    const themesVersion = themesInput.dataset.editVersion || "0";
+    const experimentsVersion = experimentsInput.dataset.editVersion || "0";
+
+    this._researchMetadataSaveQueue =
+        (this._researchMetadataSaveQueue || Promise.resolve())
+        .then(async () => {
+            const themes = parseValues(themesValue);
+            const experiments = parseValues(experimentsValue);
+
+            await this._updateResearchMetadata(
+                annotation.libraryID,
+                metadata => {
+                    metadata.themes = [
+                        ...new Set([...metadata.themes, ...themes])
+                    ];
+
+                    metadata.experiments = [
+                        ...new Set([...metadata.experiments, ...experiments])
+                    ];
+
+                    const annotationMetadata = {
+                        ...(metadata.annotations[annotationKey] || {}),
+                        themes,
+                        experiments
+                    };
+
+                    delete annotationMetadata.researchComment;
+                    metadata.annotations[annotationKey] = annotationMetadata;
+                }
+            );
+
+            await this._syncPaperResearchNote(item);
+
+            if (
+                (themesInput.dataset.editVersion || "0") === themesVersion &&
+                themesInput.value === themesValue
+            ) {
+                themesInput.dataset.dirty = "false";
+            }
+
+            if (
+                (experimentsInput.dataset.editVersion || "0") === experimentsVersion &&
+                experimentsInput.value === experimentsValue
+            ) {
+                experimentsInput.dataset.dirty = "false";
+            }
+
+            log("Research fields saved for annotation " + annotation.id);
+        })
+        .catch(e => {
+            log("Saving research fields failed: " + e);
+        });
+};
+
+let researchSaveTimer = null;
+
+const scheduleResearchSave = () => {
+    clearTimeout(researchSaveTimer);
+    researchSaveTimer = setTimeout(saveResearchFields, 700);
+};
+
+const commitResearchSave = () => {
+    clearTimeout(researchSaveTimer);
+    researchSaveTimer = null;
+    saveResearchFields();
+};
+
+themesInput.addEventListener("input", () => {
+    themesInput.dataset.dirty = "true";
+    themesInput.dataset.editVersion =
+        String((Number(themesInput.dataset.editVersion) || 0) + 1);
+
+    scheduleResearchSave();
+});
+
+experimentsInput.addEventListener("input", () => {
+    experimentsInput.dataset.dirty = "true";
+    experimentsInput.dataset.editVersion =
+        String((Number(experimentsInput.dataset.editVersion) || 0) + 1);
+
+    scheduleResearchSave();
+});
+
+themesInput.addEventListener("blur", commitResearchSave);
+experimentsInput.addEventListener("blur", commitResearchSave);
+
+themesInput.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+        event.preventDefault();
+        commitResearchSave();
+    }
+});
+
+experimentsInput.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+        event.preventDefault();
+        commitResearchSave();
+    }
+});
+
+    // Load previously saved values and reusable suggestions.
+    (async () => {
+        try {
+            const metadata = await this._getResearchMetadata(
+                annotation.libraryID
+            );
+
+            const saved =
+                metadata.annotations[annotationKey] || {};
+
+            if (
+                themesInput.dataset.dirty !== "true" &&
+                doc.activeElement !== themesInput
+            ) {
+                themesInput.value = (saved.themes || []).join(", ");
+            }
+
+            if (
+                experimentsInput.dataset.dirty !== "true" &&
+                doc.activeElement !== experimentsInput
+            ) {
+                experimentsInput.value =
+                    (saved.experiments || []).join(", ");
+            }
+
+            const updateSuggestions = (input, values) => {
+                const list = input.list;
+
+                if (!list) return;
+
+                list.replaceChildren();
+
+                for (const value of values) {
+                    const option = doc.createElement("option");
+                    option.value = value;
+                    list.appendChild(option);
+                }
+            };
+
+            updateSuggestions(themesInput, metadata.themes);
+            updateSuggestions(
+                experimentsInput,
+                metadata.experiments
+            );
+        }
+        catch (e) {
+            log("Loading research fields failed: " + e);
+        }
+    })();
+
+    const preview = popup.querySelector(".preview");
+
+    if (preview) {
+        preview.appendChild(container);
+    }
+
+    log("Research panel restored for annotation " + annotation.id);
+},
 
 	// Pastilles du popup de Zotero. selection-popup.js les rend dans
 	// « .colors > .color-button », au même index que ANNOTATION_COLORS — donc au
@@ -2954,9 +4266,17 @@ Annota = {
 	registerSelectionForm() {
 		try {
 			if (!Zotero.Reader || !Zotero.Reader.registerEventListener) return;
+			this._startAnnotationPopupMonitor();
 			this._selectionListener = (event) => {
-				try { this._renderSelectionForm(event); }
-				catch (e) { log("renderTextSelectionPopup: " + e); }
+    // Semantic color labels: independent of AI and custom fields.
+    try { this._renderColorLabels(event); }
+    catch (e) { log("renderColorLabels: " + e); }
+    // Optional research annotation fields.
+    try { this._renderResearchCapture(event); }
+    catch (e) { log("renderResearchCapture: " + e); }
+    // Existing AI/custom-fields functionality.
+    try { this._renderSelectionForm(event); }
+    catch (e) { log("renderTextSelectionPopup: " + e); }
 				// « Ask Annota » : la sélection part dans la discussion.
 				try { if (AnnotaChat) AnnotaChat.renderAskButton(event); }
 				catch (e) { log("renderAskButton: " + e); }
