@@ -44,6 +44,7 @@ Annota = {
 	rootURI: null,
 	notifierID: null,
 	inProgress: new Set(),
+    _pendingAnnotationConversions: new Map(),
 
 	// Il n'existe volontairement AUCUN prompt par défaut : chaque couleur de
 	// surlignage a le sien, et une couleur sans prompt n'est pas traitée du tout.
@@ -584,23 +585,28 @@ Annota = {
 	},
 
 	notifierCallback: {
-		notify(event, type, ids, _extraData) {
-			// On ne réagit qu'à la CRÉATION d'items. Il n'y a pas d'interrupteur
-			// global : handleItem() ne génère que pour les couleurs réglées sur
-			// « auto ». Tout mettre sur « à la demande » désactive l'automatique.
-			if (event !== "add" || type !== "item") return;
-			let t0 = Date.now();
-			for (let id of ids) {
-				// Save research metadata independently of AI processing.
-				Annota.handleResearchMetadata(id)
-					.catch(e => log("handleResearchMetadata: " + e));
+    notify(event, type, ids, _extraData) {
+        if (event !== "add" || type !== "item") return;
 
-				// Existing Annota processing remains unchanged.
-				Annota.handleItem(id, t0)
-					.catch(e => log("handleItem: " + e));
-			}
-		}
-	},
+        const t0 = Date.now();
+
+        for (const id of ids) {
+            Annota.handleConvertedAnnotation(id)
+                .then(isConversion => {
+                    if (isConversion) return;
+
+                    Annota.handleResearchMetadata(id)
+                        .catch(e => log("handleResearchMetadata: " + e));
+
+                    Annota.handleItem(id, t0)
+                        .catch(e => log("handleItem: " + e));
+                })
+                .catch(e => {
+                    log("Conversion detection failed: " + e);
+                });
+        }
+    }
+},
 
 	targetTypes() {
 		let types = ["highlight"];
@@ -650,17 +656,25 @@ async _getOrCreatePaperResearchNote(annotation) {
         throw new Error("Could not find annotation's PDF attachment.");
     }
 
-    // Find the actual paper, if the PDF belongs to one.
+    // Resolve the regular bibliographic item, if one exists.
+    // Standalone PDF attachments must not be used as note parents.
     const paper = attachment.parentID
         ? await Zotero.Items.getAsync(attachment.parentID)
-        : attachment;
+        : null;
 
-    if (!paper) {
-        throw new Error("Could not resolve the parent paper.");
+    if (
+        attachment.parentID &&
+        (!paper || !paper.isRegularItem?.())
+    ) {
+        throw new Error(
+            "The PDF attachment's parent is not a regular bibliographic item."
+        );
     }
 
+    const noteParent = paper;
+    const noteIdentity = paper || attachment;
     const libraryID = annotation.libraryID;
-    const paperKey = paper.key;
+    const paperKey = noteIdentity.key;
 
     const marker =
         "research-annotator-paper-note-v1:" + paperKey;
@@ -691,9 +705,15 @@ async _getOrCreatePaperResearchNote(annotation) {
     // Create one research note for this paper.
     const note = new Zotero.Item("note");
     note.libraryID = libraryID;
-    note.parentID = paper.id;
 
-    const title = paper.getField("title") || "Untitled paper";
+    if (noteParent) {
+        note.parentID = noteParent.id;
+    }
+
+    const title =
+        noteIdentity.getField("title")
+        || noteIdentity.getField("filename")
+        || "Standalone PDF";
 
     const escapedTitle = title
         .replace(/&/g, "&amp;")
@@ -1061,6 +1081,170 @@ async _updateResearchMetadata(libraryID, updater) {
             queues.delete(libraryID);
         }
     }
+},
+
+_readerAnnotationIDs(reader) {
+    const raw =
+        reader?._state?.annotations
+        ?? reader?._internalReader?._state?.annotations
+        ?? reader?._internalReader?._annotations;
+
+    if (!raw) {
+        throw new Error("Reader annotations collection is unavailable.");
+    }
+
+    const ids = new Set();
+
+    const addID = value => {
+        const id = typeof value === "string" ? value : value?.id;
+        if (id) ids.add(String(id));
+    };
+
+    // Avoid spread and iterator protocols on Zotero's cross-compartment objects.
+    if (typeof raw.forEach === "function") {
+        raw.forEach(value => addID(value));
+    }
+    else if (Array.isArray(raw)) {
+        for (let i = 0; i < raw.length; i++) {
+            addID(raw[i]);
+        }
+    }
+    else if (typeof raw === "object") {
+        const keys = Object.keys(raw);
+        for (let i = 0; i < keys.length; i++) {
+            addID(raw[keys[i]]);
+        }
+    }
+    else {
+        throw new Error("Unsupported reader annotations collection.");
+    }
+
+    return ids;
+},
+
+async _removePaperResearchNoteEntry(libraryID, annotationKey) {
+    const search = new Zotero.Search();
+    search.libraryID = libraryID;
+    search.addCondition("itemType", "is", "note");
+
+    const ids = await search.search();
+
+    const escapedKey = annotationKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    const entryPattern = new RegExp(
+        `<div>\\s*<p>RA_ENTRY_START:${escapedKey}<\\/p>[\\s\\S]*?<p>RA_ENTRY_END:${escapedKey}<\\/p>\\s*<\\/div>`,
+        "i"
+    );
+
+    for (const id of ids) {
+        const note = Zotero.Items.get(id);
+
+        if (!note || !note.isNote?.()) continue;
+
+        const content = note.getNote() || "";
+
+        if (!entryPattern.test(content)) continue;
+
+        note.setNote(content.replace(entryPattern, ""));
+        await note.saveTx();
+
+        log("Removed old paper-note entry: " + annotationKey);
+
+        return true;
+    }
+
+    return false;
+},
+
+async handleConvertedAnnotation(id) {
+    const item = await Zotero.Items.getAsync(id);
+
+    if (!item || !item.isAnnotation?.()) {
+        return false;
+    }
+
+    const conversionKey = `${item.libraryID}:${item.key}`;
+    const conversion = this._pendingAnnotationConversions?.get(conversionKey);
+
+    if (!conversion) {
+        return false;
+    }
+
+    // Keep the conversion registered while migration is running.
+    if (conversion.processing) {
+        return true;
+    }
+
+    conversion.processing = true;
+
+    try {
+        const libraryID = item.libraryID;
+        const oldKey = conversion.oldAnnotationKey;
+        const newKey = conversionKey;
+
+        let migratedMetadata = false;
+
+        await this._updateResearchMetadata(libraryID, metadata => {
+            const oldSaved = metadata.annotations[oldKey];
+
+            if (!oldSaved) {
+                return false;
+            }
+
+            const newSaved = metadata.annotations[newKey] || {};
+
+            const mergeLists = (oldValues, newValues) => [
+                ...new Set([
+                    ...(Array.isArray(oldValues) ? oldValues : []),
+                    ...(Array.isArray(newValues) ? newValues : [])
+                ])
+            ];
+
+            metadata.annotations[newKey] = {
+                ...oldSaved,
+                ...newSaved,
+                themes: mergeLists(oldSaved.themes, newSaved.themes),
+                experiments: mergeLists(
+                    oldSaved.experiments,
+                    newSaved.experiments
+                )
+            };
+
+            delete metadata.annotations[oldKey];
+
+            migratedMetadata = true;
+
+            return true;
+        });
+
+        const removedOldEntry =
+            await this._removePaperResearchNoteEntry(
+                libraryID,
+                oldKey
+            );
+
+        if (migratedMetadata || removedOldEntry) {
+            await this._syncPaperResearchNote(item);
+        }
+
+        this._pendingAnnotationConversions.delete(conversionKey);
+
+        log(
+            "Annotation conversion metadata migrated: "
+            + oldKey
+            + " -> "
+            + newKey
+        );
+
+    }
+    catch (e) {
+        // Keep the record so this annotation is never treated as a
+        // completely new highlight by Annota's automatic AI handler.
+        log("Annotation metadata migration failed: " + e);
+
+    }
+
+    return true;
 },
 
 async handleResearchMetadata(id) {
@@ -3684,12 +3868,7 @@ container.className = this.FORM_CLASS + " annota-research-capture";
         + "border-top:1px solid rgba(128,128,128,.3);"
         + "display:flex;flex-direction:column;gap:7px;";
 
-    let heading = doc.createElement("div");
-    heading.textContent = "Research annotation";
-    heading.style.cssText =
-        "font-size:11px;font-weight:600;opacity:.8;";
-
-    container.appendChild(heading);
+    // Section heading removed.
 
     // Consistent field creation.
     const createField = (labelText, control) => {
@@ -3726,7 +3905,7 @@ container.className = this.FORM_CLASS + " annota-research-capture";
     comment.style.cssText =
         inputStyle + "resize:vertical;";
 
-    createField("Comment (optional)", comment);
+    createField("Comment", comment);
 this._shieldFromReaderShortcuts(comment, "textarea");
     // Native Zotero tags.
     let tags = doc.createElement("input");
@@ -3735,7 +3914,7 @@ this._shieldFromReaderShortcuts(comment, "textarea");
     tags.placeholder = "Add tags, separated by commas...";
     tags.style.cssText = inputStyle;
 
-    createField("Zotero Tags (optional)", tags);
+    createField("Zotero Tags", tags);
 
     // Create reusable research fields.
     const createResearchInput = (label, fieldName) => {
@@ -3759,12 +3938,12 @@ this._shieldFromReaderShortcuts(comment, "textarea");
     };
 
     const themesField = createResearchInput(
-        "Research themes (optional)",
+        "Research themes",
         "themes"
     );
 
     const experimentsField = createResearchInput(
-        "Experiments (optional)",
+        "Experiments",
         "experiments"
     );
 
@@ -3864,6 +4043,142 @@ this._shieldFromReaderShortcuts(comment, "textarea");
     );
 },
 // Monitor Zotero readers for the popup shown when clicking an existing annotation.
+// Recalculate the existing annotation popup position after extension UI changes.
+_repositionExistingAnnotationPopup({ doc, popup, rect }) {
+    if (!doc || !popup || !Array.isArray(rect) || rect.length < 4) return;
+    if (popup.dataset.annotaPositionPending === "true") return;
+
+    popup.dataset.annotaPositionPending = "true";
+
+    const win = doc.defaultView;
+    const schedule = win?.requestAnimationFrame
+        ? win.requestAnimationFrame.bind(win)
+        : callback => setTimeout(callback, 0);
+
+    schedule(() => {
+        delete popup.dataset.annotaPositionPending;
+
+        if (!popup.isConnected) return;
+
+        const parent = popup.parentNode;
+        if (!parent) return;
+
+        const width = popup.offsetWidth;
+        const height = popup.offsetHeight;
+        const parentRect = parent.getBoundingClientRect();
+
+        const viewWidth = parentRect.width;
+        const viewHeight = parentRect.height;
+
+        if (!width || !height || !viewWidth || !viewHeight) return;
+
+        const signature = JSON.stringify([
+            rect, width, height, viewWidth, viewHeight
+        ]);
+
+
+        const padding = 20;
+        const anchorX = rect[0] + (rect[2] - rect[0]) / 2;
+        const anchorY = rect[1] + (rect[3] - rect[1]) / 2;
+
+        function calculateTop() {
+            let top = anchorY - height / 2;
+
+            if (rect[3] - rect[1] > height) {
+                top = Math.min(
+                    Math.max(top, rect[1]),
+                    rect[3] - height
+                );
+            }
+
+            return top;
+        }
+
+        function calculateLeftForSide(placeLeft) {
+            if (placeLeft) {
+                const left = rect[0] - width - padding;
+                return left < padding
+                    ? anchorX - width - padding
+                    : left;
+            }
+
+            const left = rect[2] + padding;
+
+            return left + width > viewWidth - padding
+                ? anchorX + padding
+                : left;
+        }
+
+        let left = anchorX - width / 2;
+        let top;
+        let side;
+
+        if (left < 0) {
+            side = "right";
+            left = calculateLeftForSide(false);
+            top = calculateTop();
+        }
+        else if (left + width > viewWidth) {
+            side = "left";
+            left = calculateLeftForSide(true);
+            top = calculateTop();
+        }
+        else {
+            const fitsAbove = rect[1] - padding - height > 0;
+            const fitsBelow = rect[3] + height + padding < viewHeight;
+
+            if (fitsBelow) {
+                top = rect[3] + padding;
+                side = "bottom";
+            }
+            else if (fitsAbove) {
+                top = rect[1] - padding - height;
+                side = "top";
+            }
+            else {
+                const placeLeft = rect[0] >= viewWidth / 2;
+                side = placeLeft ? "left" : "right";
+                left = calculateLeftForSide(placeLeft);
+                top = calculateTop();
+            }
+        }
+
+        if (left + width > viewWidth - padding) {
+            left = viewWidth - width - padding;
+        }
+
+        if (left < padding) left = padding;
+
+        if (top + height > viewHeight - padding) {
+            top = viewHeight - height - padding;
+        }
+
+        if (top < padding) top = padding;
+
+        const expectedTransform = `translate(${left}px, ${top}px)`;
+        const expectedClass = `page-popup-${side}-center`;
+
+        if (
+            popup.dataset.annotaPositionSignature === signature &&
+            popup.style.transform === expectedTransform &&
+            popup.classList.contains(expectedClass)
+        ) {
+            return;
+        }
+
+        popup.style.transform = expectedTransform;
+
+        popup.classList.remove(
+            "page-popup-top-center",
+            "page-popup-bottom-center",
+            "page-popup-left-center",
+            "page-popup-right-center"
+        );
+
+        popup.classList.add(expectedClass);
+        popup.dataset.annotaPositionSignature = signature;
+    });
+},
 _startAnnotationPopupMonitor() {
     if (this._annotationPopupScanTimer) return;
 
@@ -3893,12 +4208,22 @@ _startAnnotationPopupMonitor() {
 		}
 
 		this._renderExistingAnnotationResearch({
-			doc,
-			popup,
-			annotation: {
-				...annotation,
-				libraryID
-			}
+    doc,
+    popup,
+    reader,
+    annotation: {
+        ...annotation,
+        libraryID
+    }
+});
+		const popupRect =
+			reader._internalReader?._state
+				?.primaryViewAnnotationPopup?.rect;
+
+		this._repositionExistingAnnotationPopup({
+			 doc,
+			 popup,
+			 rect: popupRect
 		});
             }
         }
@@ -3911,7 +4236,7 @@ _startAnnotationPopupMonitor() {
 
 // Add research fields to the popup for an existing annotation.
 
-_renderExistingAnnotationResearch({ doc, popup, annotation }) {
+_renderExistingAnnotationResearch({ doc, popup, annotation, reader }) {
     if (!doc || !popup || !annotation?.id) return;
 
     const annotationKey = `${annotation.libraryID}:${annotation.id}`;
@@ -3941,6 +4266,9 @@ if (container?.dataset.annotationKey === annotationKey) {
 
 if (container) container.remove();
 
+const oldColorPanel = popup.querySelector(".annota-existing-colors");
+if (oldColorPanel) oldColorPanel.remove();
+
 this._ensureFormStyles(doc);
 
 container = doc.createElement("div");
@@ -3953,12 +4281,267 @@ container.className = this.FORM_CLASS + " annota-existing-research";
         + "border-top:1px solid rgba(128,128,128,.3);"
         + "display:flex;flex-direction:column;gap:8px;";
 
-    const heading = doc.createElement("div");
-    heading.textContent = "Research metadata";
-    heading.style.cssText =
-        "font-size:11px;font-weight:600;opacity:.8;";
+// Keep the colour selector separate from the research fields.
+const colorPanel = doc.createElement("div");
+colorPanel.className = this.FORM_CLASS + " annota-existing-colors";
+colorPanel.dataset.annotationKey = annotationKey;
+colorPanel.style.cssText =
+    "width:100%;max-width:calc(100vw - 24px);box-sizing:border-box;"
+    + "padding:9px 10px;"
+    + "border-bottom:1px solid rgba(128,128,128,.3);"
+    + "display:flex;flex-direction:column;gap:8px;";
 
-    container.appendChild(heading);
+    // Section heading removed.
+
+
+
+// Native Zotero conversion: highlight <-> underline.
+const annotationType = String(item.annotationType || "").toLowerCase();
+
+if (annotationType === "highlight" || annotationType === "underline") {
+    const targetType =
+        annotationType === "highlight" ? "underline" : "highlight";
+
+    const convertButton = doc.createElement("button");
+    convertButton.className = "annota-convert-annotation";
+    convertButton.type = "button";
+    convertButton.textContent =
+        targetType === "underline"
+            ? "Convert to underline"
+            : "Convert to highlight";
+
+    convertButton.style.cssText =
+        "align-self:flex-start;"
+        + "padding:5px 9px;"
+        + "border:1px solid rgba(128,128,128,.4);"
+        + "border-radius:4px;"
+        + "background:var(--fill-quinary);"
+        + "color:var(--fill-primary);"
+        + "font-size:11px;"
+        + "cursor:pointer;";
+
+    convertButton.addEventListener("click", () => {
+        const internalReader = reader?._internalReader;
+
+        if (!internalReader?.convertAnnotations) {
+            log("Native annotation conversion is unavailable.");
+            return;
+        }
+
+        convertButton.disabled = true;
+
+        try {
+            const beforeIDs = this._readerAnnotationIDs(reader);
+
+            // Zotero performs the actual conversion and generates the new ID.
+            const annotationIDs = Cu.cloneInto(
+                [annotation.id],
+                reader._iframeWindow
+            );
+
+            internalReader.convertAnnotations(
+                annotationIDs,
+                targetType
+            );
+
+            const afterIDs = this._readerAnnotationIDs(reader);
+
+            const addedIDs = [];
+
+            afterIDs.forEach(newID => {
+                if (!beforeIDs.has(newID)) {
+                    addedIDs.push(newID);
+                }
+            });
+
+            if (addedIDs.length !== 1) {
+                throw new Error(
+                    "Expected one replacement annotation, found "
+                    + addedIDs.length
+                );
+            }
+
+            const newID = addedIDs[0];
+            const conversionKey = `${item.libraryID}:${newID}`;
+
+            this._pendingAnnotationConversions.set(conversionKey, {
+                libraryID: item.libraryID,
+                oldAnnotationKey: `${item.libraryID}:${item.key}`,
+                newAnnotationKey: conversionKey,
+                oldID: item.key,
+                newID,
+                parentID: item.parentID,
+                targetType,
+                createdAt: Date.now(),
+                processing: false
+            });
+
+            log(
+                "Native annotation conversion requested: "
+                + item.key
+                + " -> "
+                + newID
+                + " ("
+                + targetType
+                + ")"
+            );
+        }
+        catch (e) {
+            log("Native annotation conversion failed: " + e);
+
+
+            convertButton.disabled = false;
+        }
+    });
+
+    colorPanel.appendChild(convertButton);
+}
+
+    const colorLabels = this.getColorLabels();
+
+    let colorLayout = String(
+        getPref("colorLabelLayout", "wrap") || "wrap"
+    );
+
+    if (!["wrap", "single", "stack", "slanted"].includes(colorLayout)) {
+        colorLayout = "wrap";
+    }
+
+    const colorContainer = doc.createElement("div");
+
+    colorContainer.style.cssText =
+        "display:flex;"
+        + "align-items:center;"
+        + "box-sizing:border-box;"
+        + "gap:" + (colorLayout === "slanted" ? "2px" : "8px") + ";"
+        + "flex-direction:" + (colorLayout === "stack" ? "column" : "row") + ";"
+        + "flex-wrap:" + (
+            colorLayout === "wrap" || colorLayout === "slanted"
+                ? "wrap"
+                : "nowrap"
+        ) + ";"
+        + "width:" + (colorLayout === "single" ? "max-content" : "100%") + ";"
+        + "max-width:100%;"
+        + "padding-top:" + (colorLayout === "slanted" ? "22px" : "5px") + ";"
+        + "padding-bottom:" + (colorLayout === "slanted" ? "25px" : "5px") + ";"
+        + "padding-left:2px;"
+        + "padding-right:2px;"
+        + "overflow:visible;";
+
+    const updateSelectedColor = () => {
+        const currentColor = String(item.annotationColor || "").toLowerCase();
+
+        for (const button of colorContainer.querySelectorAll("button")) {
+            const selected =
+                button.dataset.color.toLowerCase() === currentColor;
+
+            button.setAttribute("aria-pressed", String(selected));
+
+            button.style.outline = selected
+                ? "2px solid var(--fill-primary)"
+                : "none";
+
+            button.style.outlineOffset = selected ? "2px" : "0";
+        }
+    };
+
+    for (const color of this.COLORS) {
+        const button = doc.createElement("button");
+        button.type = "button";
+        button.dataset.color = color.hex;
+
+        const label = String(
+            colorLabels[color.hex] || color.name || "Color"
+        ).trim();
+
+        button.textContent = label;
+        button.title = label;
+        button.setAttribute("aria-label", "Set annotation colour to " + label);
+
+        const hex = color.hex.replace("#", "");
+        const r = parseInt(hex.substring(0, 2), 16);
+        const g = parseInt(hex.substring(2, 4), 16);
+        const b = parseInt(hex.substring(4, 6), 16);
+
+        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+        const textColor = brightness > 150 ? "#222222" : "#ffffff";
+
+        button.style.cssText =
+            "display:inline-flex;"
+            + "align-items:center;"
+            + "justify-content:center;"
+            + "box-sizing:border-box;"
+            + "padding:4px 8px;"
+            + "border:1px solid rgba(128,128,128,.35);"
+            + "border-radius:4px;"
+            + "background-color:" + color.hex + ";"
+            + "color:" + textColor + ";"
+            + "font-size:11px;"
+            + "font-weight:600;"
+            + "line-height:1.3;"
+            + "white-space:nowrap;"
+            + "cursor:pointer;"
+            + "flex:none;";
+
+        if (colorLayout === "slanted") {
+            button.style.transform = "rotate(-18deg)";
+            button.style.marginRight = "-9px";
+            button.style.marginBottom = "2px";
+        }
+
+        button.addEventListener("click", async () => {
+            const previousColor = item.annotationColor;
+
+            if (
+                String(previousColor || "").toLowerCase() ===
+                color.hex.toLowerCase()
+            ) {
+                return;
+            }
+
+            for (const otherButton of colorContainer.querySelectorAll("button")) {
+                otherButton.disabled = true;
+            }
+
+            try {
+                item.annotationColor = color.hex;
+                await item.saveTx();
+
+                updateSelectedColor();
+
+                log(
+                    "Annotation colour changed: "
+                    + annotation.id
+                    + " -> "
+                    + color.hex
+                );
+            }
+            catch (e) {
+                item.annotationColor = previousColor;
+                log("Changing annotation colour failed: " + e);
+
+                updateSelectedColor();
+            }
+            finally {
+                for (const otherButton of colorContainer.querySelectorAll("button")) {
+                    otherButton.disabled = false;
+                }
+            }
+        });
+
+        colorContainer.appendChild(button);
+    }
+
+    const conversionButton = colorPanel.querySelector(".annota-convert-annotation");
+
+    // Append swatches first, then move the conversion button below them.
+    colorPanel.appendChild(colorContainer);
+
+    if (conversionButton) {
+        colorPanel.appendChild(conversionButton);
+    }
+
+    updateSelectedColor();
 
     const createField = (labelText, fieldName, suggestions) => {
         const wrapper = doc.createElement("div");
@@ -3986,10 +4569,9 @@ container.className = this.FORM_CLASS + " annota-existing-research";
             + "font-size:12px;";
 
         const list = doc.createElement("datalist");
-        list.id =
-            "annota-" + fieldName + "-" + annotation.id;
+        list.id = "annota-" + fieldName + "-" + annotation.id;
 
-        for (const value of suggestions) {
+        for (const value of suggestions || []) {
             const option = doc.createElement("option");
             option.value = value;
             list.appendChild(option);
@@ -4000,7 +4582,6 @@ container.className = this.FORM_CLASS + " annota-existing-research";
         wrapper.appendChild(label);
         wrapper.appendChild(input);
         wrapper.appendChild(list);
-
         container.appendChild(wrapper);
 
         return input;
@@ -4017,128 +4598,123 @@ container.className = this.FORM_CLASS + " annota-existing-research";
         "experiments",
         []
     );
-    const parseValues = (value) => {
-        return [...new Set(
+
+    const parseValues = value => [
+        ...new Set(
             value
                 .split(",")
                 .map(v => v.trim())
                 .filter(Boolean)
-        )];
+        )
+    ];
+
+    const saveResearchFields = () => {
+        const themesValue = themesInput.value;
+        const experimentsValue = experimentsInput.value;
+
+        const themesVersion = themesInput.dataset.editVersion || "0";
+        const experimentsVersion =
+            experimentsInput.dataset.editVersion || "0";
+
+        this._researchMetadataSaveQueue =
+            (this._researchMetadataSaveQueue || Promise.resolve())
+            .then(async () => {
+                const themes = parseValues(themesValue);
+                const experiments = parseValues(experimentsValue);
+
+                await this._updateResearchMetadata(
+                    annotation.libraryID,
+                    metadata => {
+                        metadata.themes = [
+                            ...new Set([...metadata.themes, ...themes])
+                        ];
+
+                        metadata.experiments = [
+                            ...new Set([
+                                ...metadata.experiments,
+                                ...experiments
+                            ])
+                        ];
+
+                        const annotationMetadata = {
+                            ...(metadata.annotations[annotationKey] || {}),
+                            themes,
+                            experiments
+                        };
+
+                        // Remove the accidentally introduced Name field.
+                        delete annotationMetadata.name;
+                        delete annotationMetadata.researchComment;
+
+                        metadata.annotations[annotationKey] =
+                            annotationMetadata;
+                    }
+                );
+
+                await this._syncPaperResearchNote(item);
+
+                if (
+                    (themesInput.dataset.editVersion || "0") === themesVersion &&
+                    themesInput.value === themesValue
+                ) {
+                    themesInput.dataset.dirty = "false";
+                }
+
+                if (
+                    (experimentsInput.dataset.editVersion || "0") ===
+                        experimentsVersion &&
+                    experimentsInput.value === experimentsValue
+                ) {
+                    experimentsInput.dataset.dirty = "false";
+                }
+
+                log("Research fields saved for annotation " + annotation.id);
+            })
+            .catch(e => {
+                log("Saving research fields failed: " + e);
+            });
     };
 
-const saveResearchFields = () => {
-    const themesValue = themesInput.value;
-    const experimentsValue = experimentsInput.value;
+    let researchSaveTimer = null;
 
-    const themesVersion = themesInput.dataset.editVersion || "0";
-    const experimentsVersion = experimentsInput.dataset.editVersion || "0";
+    const scheduleResearchSave = () => {
+        clearTimeout(researchSaveTimer);
+        researchSaveTimer = setTimeout(saveResearchFields, 700);
+    };
 
-    this._researchMetadataSaveQueue =
-        (this._researchMetadataSaveQueue || Promise.resolve())
-        .then(async () => {
-            const themes = parseValues(themesValue);
-            const experiments = parseValues(experimentsValue);
+    const commitResearchSave = () => {
+        clearTimeout(researchSaveTimer);
+        researchSaveTimer = null;
+        saveResearchFields();
+    };
 
-            await this._updateResearchMetadata(
-                annotation.libraryID,
-                metadata => {
-                    metadata.themes = [
-                        ...new Set([...metadata.themes, ...themes])
-                    ];
+    for (const input of [themesInput, experimentsInput]) {
+        input.addEventListener("input", () => {
+            input.dataset.dirty = "true";
+            input.dataset.editVersion =
+                String((Number(input.dataset.editVersion) || 0) + 1);
 
-                    metadata.experiments = [
-                        ...new Set([...metadata.experiments, ...experiments])
-                    ];
-
-                    const annotationMetadata = {
-                        ...(metadata.annotations[annotationKey] || {}),
-                        themes,
-                        experiments
-                    };
-
-                    delete annotationMetadata.researchComment;
-                    metadata.annotations[annotationKey] = annotationMetadata;
-                }
-            );
-
-            await this._syncPaperResearchNote(item);
-
-            if (
-                (themesInput.dataset.editVersion || "0") === themesVersion &&
-                themesInput.value === themesValue
-            ) {
-                themesInput.dataset.dirty = "false";
-            }
-
-            if (
-                (experimentsInput.dataset.editVersion || "0") === experimentsVersion &&
-                experimentsInput.value === experimentsValue
-            ) {
-                experimentsInput.dataset.dirty = "false";
-            }
-
-            log("Research fields saved for annotation " + annotation.id);
-        })
-        .catch(e => {
-            log("Saving research fields failed: " + e);
+            scheduleResearchSave();
         });
-};
 
-let researchSaveTimer = null;
+        input.addEventListener("blur", commitResearchSave);
 
-const scheduleResearchSave = () => {
-    clearTimeout(researchSaveTimer);
-    researchSaveTimer = setTimeout(saveResearchFields, 700);
-};
-
-const commitResearchSave = () => {
-    clearTimeout(researchSaveTimer);
-    researchSaveTimer = null;
-    saveResearchFields();
-};
-
-themesInput.addEventListener("input", () => {
-    themesInput.dataset.dirty = "true";
-    themesInput.dataset.editVersion =
-        String((Number(themesInput.dataset.editVersion) || 0) + 1);
-
-    scheduleResearchSave();
-});
-
-experimentsInput.addEventListener("input", () => {
-    experimentsInput.dataset.dirty = "true";
-    experimentsInput.dataset.editVersion =
-        String((Number(experimentsInput.dataset.editVersion) || 0) + 1);
-
-    scheduleResearchSave();
-});
-
-themesInput.addEventListener("blur", commitResearchSave);
-experimentsInput.addEventListener("blur", commitResearchSave);
-
-themesInput.addEventListener("keydown", event => {
-    if (event.key === "Enter") {
-        event.preventDefault();
-        commitResearchSave();
+        input.addEventListener("keydown", event => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                commitResearchSave();
+            }
+        });
     }
-});
 
-experimentsInput.addEventListener("keydown", event => {
-    if (event.key === "Enter") {
-        event.preventDefault();
-        commitResearchSave();
-    }
-});
-
-    // Load previously saved values and reusable suggestions.
+    // Load saved research values and reusable suggestions.
     (async () => {
         try {
             const metadata = await this._getResearchMetadata(
                 annotation.libraryID
             );
 
-            const saved =
-                metadata.annotations[annotationKey] || {};
+            const saved = metadata.annotations[annotationKey] || {};
 
             if (
                 themesInput.dataset.dirty !== "true" &&
@@ -4157,12 +4733,11 @@ experimentsInput.addEventListener("keydown", event => {
 
             const updateSuggestions = (input, values) => {
                 const list = input.list;
-
                 if (!list) return;
 
                 list.replaceChildren();
 
-                for (const value of values) {
+                for (const value of values || []) {
                     const option = doc.createElement("option");
                     option.value = value;
                     list.appendChild(option);
@@ -4170,22 +4745,75 @@ experimentsInput.addEventListener("keydown", event => {
             };
 
             updateSuggestions(themesInput, metadata.themes);
-            updateSuggestions(
-                experimentsInput,
-                metadata.experiments
-            );
+            updateSuggestions(experimentsInput, metadata.experiments);
         }
         catch (e) {
             log("Loading research fields failed: " + e);
         }
     })();
 
+    // Arrange the popup in the requested order.
     const preview = popup.querySelector(".preview");
 
     if (preview) {
-        preview.appendChild(container);
-    }
+        // Remove headings left by an earlier annotation popup.
+        for (const oldHeading of preview.querySelectorAll(
+            ".annota-existing-section-heading"
+        )) {
+            oldHeading.remove();
+        }
 
+        const comment = preview.querySelector(":scope > .comment");
+        const tags = preview.querySelector(":scope > button.tags");
+
+        const createSectionHeading = text => {
+            const heading = doc.createElement("div");
+            heading.className = "annota-existing-section-heading";
+            heading.textContent = text;
+            heading.style.cssText =
+                "font-size:11px;font-weight:600;"
+                + "margin:7px 0 3px;";
+            return heading;
+        };
+
+        // 1. Colors, followed by the conversion button inside colorPanel.
+        if (comment) {
+            preview.insertBefore(colorPanel, comment);
+        }
+        else if (tags) {
+            preview.insertBefore(colorPanel, tags);
+        }
+        else {
+            preview.insertBefore(colorPanel, preview.firstChild);
+        }
+
+        // 2. Comment heading above Zotero's native comment editor.
+        if (comment) {
+            preview.insertBefore(
+                createSectionHeading("Comment"),
+                comment
+            );
+        }
+
+        // 3. Tags heading above Zotero's native Tags button.
+        if (tags) {
+            preview.insertBefore(
+                createSectionHeading("Tags"),
+                tags
+            );
+        }
+
+        // 4. Research themes and experiments after native Tags.
+        if (tags) {
+            tags.insertAdjacentElement("afterend", container);
+        }
+        else if (comment) {
+            comment.insertAdjacentElement("afterend", container);
+        }
+        else {
+            preview.appendChild(container);
+        }
+    }
     log("Research panel restored for annotation " + annotation.id);
 },
 
