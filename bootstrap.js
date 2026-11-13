@@ -585,30 +585,373 @@ Annota = {
 	},
 
 	notifierCallback: {
-    notify(event, type, ids, _extraData) {
-        if (event !== "add" || type !== "item") return;
+    notify(event, type, ids, extraData) {
+        log(
+            "[RA NOTIFIER] event=" + event
+            + " type=" + type
+            + " ids=" + JSON.stringify(ids)
+            + " extraData=" + JSON.stringify(extraData)
+        );
 
-        const t0 = Date.now();
+        if (type !== "item") return;
+
+        if (!["add", "modify", "delete"].includes(event)) return;
+
+        const notifiedAt = Date.now();
 
         for (const id of ids) {
-            Annota.handleConvertedAnnotation(id)
-                .then(isConversion => {
-                    if (isConversion) return;
-
-                    Annota.handleResearchMetadata(id)
-                        .catch(e => log("handleResearchMetadata: " + e));
-
-                    Annota.handleItem(id, t0)
-                        .catch(e => log("handleItem: " + e));
-                })
-                .catch(e => {
-                    log("Conversion detection failed: " + e);
-                });
+            Annota._handlePaperNoteNotification(
+                event,
+                id,
+                extraData,
+                notifiedAt
+            ).catch(e => {
+                log(
+                    "Paper-note notification failed ("
+                    + event + ", " + id + "): " + e
+                );
+            });
         }
     }
 },
 
-	targetTypes() {
+async _handlePaperNoteNotification(event, id, extraData, notifiedAt) {
+    // Deleted items are no longer available through Zotero.Items.
+    // Zotero supplies their previous data through extraData.
+    if (event === "delete") {
+        const deleted = extraData?.[id];
+        const old = deleted?.old || deleted;
+
+        const key = String(old?.key || deleted?.key || "");
+        const libraryID = Number(
+            old?.libraryID ?? deleted?.libraryID
+        );
+
+        if (!key || !Number.isInteger(libraryID)) {
+            log(
+                "Cannot identify deleted annotation from notifier data: "
+                + id
+            );
+            return;
+        }
+
+        const annotationKey = `${libraryID}:${key}`;
+
+        await this._removePaperResearchNoteEntry(
+            libraryID,
+            annotationKey
+        );
+
+        await this._updateResearchMetadata(libraryID, metadata => {
+            if (!metadata.annotations[annotationKey]) {
+                return false;
+            }
+
+            delete metadata.annotations[annotationKey];
+            return true;
+        });
+
+        log("Deleted annotation removed from paper note: " + annotationKey);
+        return;
+    }
+
+    const item = await Zotero.Items.getAsync(id);
+
+    if (!item) return;
+
+    if (!item.isAnnotation?.()) return;
+
+    // Ignore the annotation modification caused by a note edit.
+    const annotationKey = `${item.libraryID}:${item.key}`;
+
+    if (this._paperNoteReverseSyncKeys?.has(annotationKey)) {
+        this._paperNoteReverseSyncKeys.delete(annotationKey);
+        return;
+    }
+
+    // Any modification to an annotation should update its paper note.
+    // This is deliberately independent of AI configuration.
+    if (event === "modify") {
+        this._schedulePaperResearchNoteSync(item);
+        return;
+    }
+
+    // New annotation.
+    const isConversion = await this.handleConvertedAnnotation(id);
+
+    if (isConversion) {
+        const fresh = await Zotero.Items.getAsync(id);
+
+        if (fresh?.isAnnotation?.()) {
+            await this._syncPaperResearchNote(fresh);
+        }
+
+        return;
+    }
+
+    // Capture any research fields entered in the selection popup.
+    try {
+        await this.handleResearchMetadata(id);
+    }
+    catch (e) {
+        log("handleResearchMetadata: " + e);
+    }
+
+    // Always create/update the paper note, even if AI is disabled,
+    // no color prompt exists, or the annotation already has a comment.
+    const fresh = await Zotero.Items.getAsync(id);
+
+    if (fresh?.isAnnotation?.()) {
+        await this._syncPaperResearchNote(fresh);
+    }
+
+    // AI comment generation remains optional and independent.
+    await this.handleItem(id, notifiedAt);
+},
+
+async _syncPaperResearchNoteFromNote(note) {
+    const content = note.getNote() || "";
+    const doc = new DOMParser().parseFromString(content, "text/html");
+    const paragraphs = Array.from(doc.querySelectorAll("p"));
+    const entries = [];
+
+    for (let i = 0; i < paragraphs.length; i++) {
+        const markerText = paragraphs[i].textContent.trim();
+
+        if (!markerText.startsWith("RA_ENTRY_START:")) continue;
+
+        const annotationKey = markerText.substring(
+            "RA_ENTRY_START:".length
+        );
+
+        const endMarker = `RA_ENTRY_END:${annotationKey}`;
+        const container = paragraphs[i].closest("div");
+
+        if (!container) continue;
+
+        const containerText = container.textContent || "";
+        if (!containerText.includes(endMarker)) continue;
+
+        const separator = annotationKey.indexOf(":");
+        if (separator < 1) continue;
+
+        const libraryID = Number(annotationKey.substring(0, separator));
+        const itemKey = annotationKey.substring(separator + 1);
+
+        if (!Number.isInteger(libraryID) || !itemKey) continue;
+
+        const heading = container.querySelector("h2");
+        if (!heading) continue;
+
+        const mark = heading.querySelector("mark");
+        const underlineElement = heading.querySelector("u");
+        const spans = Array.from(heading.querySelectorAll("span"));
+
+        // Support both the current <u> format and older border-bottom spans.
+        const legacyUnderline = spans.find(span =>
+            /border-bottom/i.test(span.getAttribute("style") || "")
+        );
+
+        const underline = underlineElement || legacyUnderline;
+
+        let annotationText = "";
+        let annotationType = "";
+        let annotationColor = "";
+
+        if (mark) {
+            annotationText = mark.textContent || "";
+            annotationType = "highlight";
+            annotationColor =
+                mark.style.backgroundColor
+                || mark.getAttribute("style")
+                || "";
+        }
+        else if (underline) {
+            annotationText = underline.textContent || "";
+            annotationType = "underline";
+            annotationColor =
+                underline.style.textDecorationColor
+                || underline.style.borderBottomColor
+                || underline.getAttribute("style")
+                || "";
+        }
+        else {
+            annotationText = heading.textContent
+                .replace(/^\s*\d+\.\s*/, "")
+                .trim();
+        }
+
+        // Convert CSS RGB or hexadecimal colors into Zotero's #RRGGBB.
+        const colorMatch = String(annotationColor).match(
+            /#([0-9a-f]{6})\b|rgb\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/i
+        );
+
+        if (colorMatch) {
+            if (colorMatch[1]) {
+                annotationColor = "#" + colorMatch[1];
+            }
+            else {
+                annotationColor = "#" + colorMatch.slice(2, 5)
+                    .map(value => Number(value).toString(16).padStart(2, "0"))
+                    .join("");
+            }
+        }
+        else {
+            annotationColor = "";
+        }
+
+        const getField = label => {
+            const paragraph = Array.from(
+                container.querySelectorAll("p")
+            ).find(p =>
+                p.textContent.trim().toLowerCase().startsWith(
+                    label.toLowerCase() + ":"
+                )
+            );
+
+            if (!paragraph) return "";
+
+            const text = paragraph.textContent.trim();
+            const colonIndex = text.indexOf(":");
+
+            return colonIndex >= 0
+                ? text.slice(colonIndex + 1).trim()
+                : "";
+        };
+
+        const splitList = value => value
+            ? value.split(",").map(part => part.trim()).filter(Boolean)
+            : [];
+
+        entries.push({
+            annotationKey,
+            libraryID,
+            itemKey,
+            annotationText,
+            annotationType,
+            annotationColor,
+            comment: getField("Research comment"),
+            themes: splitList(getField("Themes")),
+            experiments: splitList(getField("Experiments"))
+        });
+    }
+
+    if (!entries.length) {
+        log("No editable annotation entries found in research note: " + note.key);
+        return;
+    }
+
+    const libraryID = note.libraryID;
+    const search = new Zotero.Search();
+    search.libraryID = libraryID;
+    search.addCondition("resultLevel", "annotation");
+
+    const ids = await search.search();
+    const annotations = new Map();
+
+    for (const id of ids) {
+        const item = await Zotero.Items.getAsync(id);
+        if (item?.isAnnotation?.()) {
+            annotations.set(
+                `${item.libraryID}:${item.key}`,
+                item
+            );
+        }
+    }
+
+    if (!this._paperNoteReverseSyncKeys) {
+        this._paperNoteReverseSyncKeys = new Map();
+    }
+
+    let updatedAnnotations = 0;
+
+    for (const entry of entries) {
+        const item = annotations.get(entry.annotationKey);
+        if (!item) continue;
+
+        let changed = false;
+
+        if (
+            item.annotationText !== entry.annotationText
+            && entry.annotationText
+        ) {
+            item.annotationText = entry.annotationText;
+            changed = true;
+        }
+
+        if (
+            entry.annotationType
+            && item.annotationType !== entry.annotationType
+        ) {
+            item.annotationType = entry.annotationType;
+            changed = true;
+        }
+
+        if (
+            entry.annotationColor
+            && item.annotationColor !== entry.annotationColor
+        ) {
+            item.annotationColor = entry.annotationColor;
+            changed = true;
+        }
+
+        if (item.annotationComment !== entry.comment) {
+            item.annotationComment = entry.comment;
+            changed = true;
+        }
+
+        if (changed) {
+            this._paperNoteReverseSyncKeys.set(
+                entry.annotationKey,
+                Date.now()
+            );
+
+            await item.saveTx();
+            updatedAnnotations++;
+        }
+    }
+
+    await this._updateResearchMetadata(libraryID, metadata => {
+        let changed = false;
+
+        for (const entry of entries) {
+            const saved = metadata.annotations[entry.annotationKey] || {};
+
+            const oldThemes = JSON.stringify(saved.themes || []);
+            const oldExperiments = JSON.stringify(saved.experiments || []);
+
+            if (
+                oldThemes !== JSON.stringify(entry.themes)
+                || oldExperiments !== JSON.stringify(entry.experiments)
+            ) {
+                metadata.annotations[entry.annotationKey] = {
+                    ...saved,
+                    themes: entry.themes,
+                    experiments: entry.experiments
+                };
+
+                changed = true;
+            }
+        }
+
+        return changed;
+    });
+
+    // Rebuild from the updated PDF annotations and metadata.
+    const firstItem = annotations.get(entries[0].annotationKey);
+
+    if (firstItem) {
+        await this._syncPaperResearchNote(firstItem);
+    }
+
+    log(
+        "Reverse note synchronization completed. Updated annotations: "
+        + updatedAnnotations
+        + " | Entries: "
+        + entries.length
+    );
+},
+targetTypes() {
 		let types = ["highlight"];
 		if (getPref("alsoUnderline", false)) types.push("underline");
 		if (this.hasImageEntries()) types.push("image");
@@ -672,12 +1015,12 @@ async _getOrCreatePaperResearchNote(annotation) {
     }
 
     const noteParent = paper;
-    const noteIdentity = paper || attachment;
+    const noteIdentity = attachment;
     const libraryID = annotation.libraryID;
-    const paperKey = noteIdentity.key;
+    const attachmentKey = attachment.key;
 
     const marker =
-        "research-annotator-paper-note-v1:" + paperKey;
+        "research-annotator-pdf-note-v1:" + attachmentKey;
 
     // Search existing Zotero notes for this paper's research note.
     const search = new Zotero.Search();
@@ -711,8 +1054,8 @@ async _getOrCreatePaperResearchNote(annotation) {
     }
 
     const title =
-        noteIdentity.getField("title")
-        || noteIdentity.getField("filename")
+        noteIdentity.getField("filename")
+        || noteIdentity.getField("title")
         || "Standalone PDF";
 
     const escapedTitle = title
@@ -722,8 +1065,8 @@ async _getOrCreatePaperResearchNote(annotation) {
 
     note.setNote(`
         <h1>Research Notes — ${escapedTitle}</h1>
-        <div>${marker}</div>
-        <p>Research notes maintained by ResearchAnnotator.</p>
+        <p style="margin:0;padding:0;font-size:1px;line-height:1px;color:#888;"><span>${marker}</span></p>
+
         <hr>
     `);
 
@@ -827,43 +1170,106 @@ async _createResearchNote(libraryID, title) {
         title: title
     };
 },
-async _syncPaperResearchNote(annotation) {
-    if (!annotation || !annotation.isAnnotation?.()) return;
+_schedulePaperResearchNoteSync(annotation) {
+    if (!annotation?.parentID || !annotation.id) return;
 
-    const { note } = await this._getOrCreatePaperResearchNote(annotation);
+    const queueKey = `${annotation.libraryID}:${annotation.parentID}`;
 
-    const libraryID = annotation.libraryID;
-    const annotationKey = `${libraryID}:${annotation.key}`;
-
-    let metadata = await this._getResearchMetadata(libraryID);
-    let saved = metadata.annotations[annotationKey] || {};
-
-    let comment = annotation.annotationComment || "";
-
-    // Migrate comments saved by the previous ResearchAnnotator version.
-    if (saved.researchComment) {
-        if (!comment) {
-            annotation.annotationComment = saved.researchComment;
-            await annotation.saveTx();
-            comment = annotation.annotationComment || "";
-        }
-
-        await this._updateResearchMetadata(libraryID, currentMetadata => {
-            const currentSaved =
-                currentMetadata.annotations[annotationKey];
-
-            if (!currentSaved?.researchComment) {
-                return false;
-            }
-
-            delete currentSaved.researchComment;
-            return true;
-        });
+    if (!this._paperNoteSyncTimers) {
+        this._paperNoteSyncTimers = new Map();
     }
 
-    // Read the latest themes and experiments before rebuilding the paper note.
-    metadata = await this._getResearchMetadata(libraryID);
-    saved = metadata.annotations[annotationKey] || {};
+    const existingTimer = this._paperNoteSyncTimers.get(queueKey);
+
+    if (existingTimer) {
+        clearTimeout(existingTimer);
+    }
+
+    const timer = setTimeout(async () => {
+        this._paperNoteSyncTimers.delete(queueKey);
+
+        try {
+            const fresh = await Zotero.Items.getAsync(annotation.id);
+
+            if (fresh?.isAnnotation?.()) {
+                await this._syncPaperResearchNote(fresh);
+            }
+        }
+        catch (error) {
+            log(
+                "Debounced paper-note synchronization failed for "
+                + queueKey + ": " + error
+            );
+        }
+    }, 1200);
+
+    this._paperNoteSyncTimers.set(queueKey, timer);
+},
+async _syncPaperResearchNote(annotation) {
+    if (!annotation) return;
+
+    const libraryID = annotation.libraryID;
+    const parentID = annotation.parentID;
+    const queueKey = `${libraryID}:${parentID}`;
+
+    if (!this._paperNoteQueues) {
+        this._paperNoteQueues = new Map();
+    }
+
+    const previous = this._paperNoteQueues.get(queueKey)
+        || Promise.resolve();
+
+    const current = previous
+        .catch(e => {
+            log("Previous paper-note update failed: " + e);
+        })
+        .then(async () => {
+            // Reload the annotation so queued work uses its latest state.
+            const fresh = annotation.id
+                ? await Zotero.Items.getAsync(annotation.id)
+                : annotation;
+
+            if (!fresh || !fresh.isAnnotation?.()) return;
+
+            return this._syncPaperResearchNoteNow(fresh);
+        });
+
+    this._paperNoteQueues.set(queueKey, current);
+
+    try {
+        return await current;
+    }
+    finally {
+        if (this._paperNoteQueues.get(queueKey) === current) {
+            this._paperNoteQueues.delete(queueKey);
+        }
+    }
+},
+
+async _syncPaperResearchNoteNow(annotation) {
+    if (!annotation || !annotation.isAnnotation?.()) return;
+
+    const attachmentID = annotation.parentID;
+    if (!attachmentID) return;
+
+    const { note } = await this._getOrCreatePaperResearchNote(annotation);
+    const libraryID = annotation.libraryID;
+
+    const attachment = await Zotero.Items.getAsync(attachmentID);
+
+    if (!attachment || !attachment.isAttachment?.()) {
+        throw new Error("Could not resolve PDF attachment for annotation links.");
+    }
+
+    const library = Zotero.Libraries.get(libraryID);
+
+    const libraryPath =
+        library?.libraryType === "group" && library.groupID
+            ? `groups/${library.groupID}`
+            : "library";
+
+    const pdfLinkBase =
+        `zotero://open-pdf/${libraryPath}/items/${attachment.key}`;
 
     const escapeHTML = value =>
         String(value ?? "")
@@ -873,179 +1279,743 @@ async _syncPaperResearchNote(annotation) {
             .replace(/"/g, "&quot;")
             .replace(/'/g, "&#39;");
 
-    const text = annotation.annotationText || "";
+    // Load every annotation belonging to this PDF.
+    const search = new Zotero.Search();
+    search.libraryID = libraryID;
+    search.addCondition("resultLevel", "annotation");
 
-    const themes = saved.themes || [];
-    const experiments = saved.experiments || [];
+    const ids = await search.search();
+    const annotations = [];
 
-    let page = "";
+    for (const id of ids) {
+        const item = await Zotero.Items.getAsync(id);
 
-    try {
-        const position = typeof annotation.annotationPosition === "string"
-            ? JSON.parse(annotation.annotationPosition)
-            : annotation.annotationPosition;
-
-        if (typeof position?.pageIndex === "number") {
-            page = String(position.pageIndex + 1);
+        if (
+            item?.isAnnotation?.() &&
+            item.parentID === attachmentID
+        ) {
+            annotations.push(item);
         }
     }
-    catch (e) {
-        log("Could not read annotation page number: " + e);
+
+    // A newly converted annotation may not yet appear in Zotero's search results.
+    // Ensure the annotation that triggered this rebuild is included.
+    if (
+        annotation.parentID === attachmentID &&
+        !annotations.some(item => item.id === annotation.id)
+    ) {
+        const currentAnnotation = await Zotero.Items.getAsync(annotation.id);
+
+        if (
+            currentAnnotation?.isAnnotation?.() &&
+            currentAnnotation.parentID === attachmentID
+        ) {
+            annotations.push(currentAnnotation);
+            log(
+                "Added triggering annotation missing from search results: "
+                + currentAnnotation.key
+            );
+        }
     }
 
-    const entryStart = `RA_ENTRY_START:${annotationKey}`;
-    const entryEnd = `RA_ENTRY_END:${annotationKey}`;
+    // Read research metadata once for the complete rebuild.
+    const metadata = await this._getResearchMetadata(libraryID);
+    const colorLabels = this.getColorLabels();
 
-    const entryHTML = `
-        <div>
-            <p>${entryStart}</p>
-            <h2>${escapeHTML(text || "Image annotation")}</h2>
-            ${page ? `<p><strong>Page:</strong> ${page}</p>` : ""}
-            ${comment ? `<p><strong>Research comment:</strong> ${escapeHTML(comment)}</p>` : ""}
-            ${themes.length
-                ? `<p><strong>Themes:</strong> ${themes.map(escapeHTML).join(", ")}</p>`
-                : ""}
-            ${experiments.length
-                ? `<p><strong>Experiments:</strong> ${experiments.map(escapeHTML).join(", ")}</p>`
-                : ""}
-            <p>${entryEnd}</p>
-        </div>
-    `;
+    const entries = [];
 
-    let content = note.getNote() || "";
+    for (const item of annotations) {
+        const annotationKey = `${libraryID}:${item.key}`;
+        const saved = metadata.annotations[annotationKey] || {};
 
-    // Replace the existing entry if this annotation was already synchronized.
-    const escapedKey = annotationKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        let comment = item.annotationComment || "";
 
-    const entryPattern = new RegExp(
-        `<div>\\s*<p>RA_ENTRY_START:${escapedKey}<\\/p>[\\s\\S]*?<p>RA_ENTRY_END:${escapedKey}<\\/p>\\s*<\\/div>`,
-        "i"
-    );
+        // Migrate comments stored by the previous version.
+        if (saved.researchComment) {
+            if (!comment) {
+                item.annotationComment = saved.researchComment;
+                await item.saveTx();
+                comment = item.annotationComment || "";
+            }
 
-    if (entryPattern.test(content)) {
-        content = content.replace(entryPattern, entryHTML);
+            await this._updateResearchMetadata(libraryID, current => {
+                const currentSaved =
+                    current.annotations[annotationKey];
+
+                if (!currentSaved?.researchComment) return false;
+
+                delete currentSaved.researchComment;
+                return true;
+            });
+        }
+
+        const text = item.annotationText || "";
+        const type = String(item.annotationType || "").toLowerCase();
+        const color = String(item.annotationColor || "").toLowerCase();
+
+        const labelEntry = Object.entries(colorLabels).find(
+            ([hex]) => String(hex).toLowerCase() === color
+        );
+
+        const colorLabel = String(labelEntry?.[1] || "").trim();
+        const safeColor = /^#[0-9a-f]{6}$/i.test(color) ? color : "";
+
+        const escapedText = escapeHTML(text || "Image annotation");
+        let formattedText = escapedText;
+
+        if (safeColor && type === "highlight") {
+            formattedText =
+                `<mark style="background-color:${safeColor};color:CanvasText;text-decoration:none;border-bottom:0;">${escapedText}</mark>`;
+        }
+        else if (safeColor && type === "underline") {
+            formattedText =
+                `<span style="text-decoration:none;border-bottom:2px solid ${safeColor};padding-bottom:1px;">${escapedText}</span>`;
+        }
+
+        let pageIndex = Number.MAX_SAFE_INTEGER;
+        let page = "";
+        let positionY = Number.MAX_SAFE_INTEGER;
+        let positionX = Number.MAX_SAFE_INTEGER;
+
+        try {
+            const position =
+                typeof item.annotationPosition === "string"
+                    ? JSON.parse(item.annotationPosition)
+                    : item.annotationPosition;
+
+            if (typeof position?.pageIndex === "number") {
+                pageIndex = position.pageIndex;
+                page = String(pageIndex + 1);
+            }
+
+            const rects = Array.isArray(position?.rects)
+                ? position.rects.filter(rect =>
+                    Array.isArray(rect) && rect.length >= 4
+                )
+                : [];
+
+            if (rects.length) {
+                const xValues = rects.flatMap(rect =>
+                    [Number(rect[0]), Number(rect[2])]
+                ).filter(Number.isFinite);
+
+                const yValues = rects.flatMap(rect =>
+                    [Number(rect[1]), Number(rect[3])]
+                ).filter(Number.isFinite);
+
+                if (xValues.length) positionX = Math.min(...xValues);
+                // PDF coordinates have a bottom-left origin:
+                // larger Y values are higher on the page.
+                if (yValues.length) positionY = Math.max(...yValues);
+            }
+        }
+        catch (e) {
+            log("Could not read annotation page or position: " + e);
+        }
+
+        const annotationLink = page
+            ? `${pdfLinkBase}?page=${pageIndex + 1}&amp;annotation=${item.key}`
+            : "";
+
+        const tags = (item.getTags?.() || [])
+            .map(tag => typeof tag === "string" ? tag : tag.tag)
+            .filter(Boolean)
+            .filter(tag =>
+                !tag.startsWith("RA:Theme:") &&
+                !tag.startsWith("RA:Experiment:") &&
+                !tag.startsWith("RA:ThemeCatalog:") &&
+                !tag.startsWith("RA:ExperimentCatalog:")
+            );
+
+        const themes = Array.isArray(saved.themes) ? saved.themes : [];
+        const experiments = Array.isArray(saved.experiments)
+            ? saved.experiments
+            : [];
+
+        const labelHighlightStyle = safeColor
+            ? ` style="background-color:${safeColor};color:CanvasText;padding:2px 5px;"`
+            : "";
+
+        const entryHTML = `
+            <div>
+                <p style="margin:0;padding:0;font-size:1px;line-height:1px;color:#888;">RA_ENTRY_START:${escapeHTML(annotationKey)}</p>
+                <p><strong><mark${labelHighlightStyle}>${escapeHTML(colorLabel || (type === "highlight" ? "Highlight" : type === "underline" ? "Underline" : "Annotation"))}</mark></strong></p>
+                <h2>${annotationLink
+                    ? `<a href="${annotationLink}" style="color:CanvasText !important;text-decoration:none !important;border-bottom:0;">${formattedText}</a>`
+                    : formattedText}</h2>
+                ${page ? `<p><strong>Page:</strong> ${page}</p>` : ""}
+                ${comment ? `<p><strong>Research comment:</strong> ${escapeHTML(comment)}</p>` : ""}
+                ${themes.length
+                    ? `<p><strong>Themes:</strong> ${themes.map(escapeHTML).join(", ")}</p>`
+                    : ""}
+                ${experiments.length
+                    ? `<p><strong>Experiments:</strong> ${experiments.map(escapeHTML).join(", ")}</p>`
+                    : ""}
+                ${tags.length
+                    ? `<p><strong>Tags:</strong> ${tags.map(escapeHTML).join(", ")}</p>`
+                    : ""}
+                <p style="margin:0;padding:0;font-size:1px;line-height:1px;color:#888;">RA_ENTRY_END:${escapeHTML(annotationKey)}</p>
+            </div>
+        `;
+
+        entries.push({
+            key: annotationKey,
+            pageIndex,
+            positionY,
+            positionX,
+            color,
+            html: entryHTML
+        });
+    }
+
+    // PDF order is the default. Color order groups by actual annotation
+    // color, retaining reading order inside each color group.
+    const noteSortOrder = getPref("paperNoteSortOrder", "pdf");
+
+    const comparePDFPosition = (a, b) =>
+        a.pageIndex - b.pageIndex ||
+        b.positionY - a.positionY ||
+        a.positionX - b.positionX ||
+        a.key.localeCompare(b.key);
+
+    if (noteSortOrder === "color") {
+        entries.sort((a, b) =>
+            a.color.localeCompare(b.color) ||
+            comparePDFPosition(a, b)
+        );
     }
     else {
-        content += entryHTML;
+        entries.sort(comparePDFPosition);
     }
 
+    // Preserve the note heading and introductory text, but discard all
+    // previous managed entries. This also removes duplicates and stale entries.
+    let content = note.getNote() || "";
+    const firstManagedEntry = content.indexOf("RA_ENTRY_START:");
+
+    if (firstManagedEntry !== -1) {
+        // Preserve the note heading and attachment marker.
+        const firstEntryParagraph = content.lastIndexOf("<p", firstManagedEntry);
+        content = content.substring(
+            0,
+            firstEntryParagraph >= 0 ? firstEntryParagraph : firstManagedEntry
+        );
+    }
+    const numberedEntries = entries.map((entry, index) =>
+        entry.html.replace(
+            /<h2>([\s\S]*?)<\/h2>/i,
+            `<h2>${index + 1}. $1</h2>`
+        )
+    );
+
+    content =
+        content.replace(/\s*$/, "\n")
+        + numberedEntries.join("\n");
+
+    // Avoid rewriting and refreshing an already up-to-date research note.
+    const existingNoteContent = note.getNote() || "";
+
+    if (existingNoteContent === content) {
+        log(
+            "Paper research note unchanged; skipped refresh. Note: "
+            + note.key
+        );
+        return;
+    }
+
+    if (!this._paperNoteGeneratedContent) {
+        this._paperNoteGeneratedContent = new Map();
+    }
+
+    const generatedNoteKey = `${note.libraryID}:${note.key}`;
+
     note.setNote(content);
+
+    // Register the expected content before saving to guard against
+    // a notifier arriving while saveTx() is still completing.
+    this._paperNoteGeneratedContent.set(
+        generatedNoteKey,
+        content
+    );
+
     await note.saveTx();
 
-    log("Research note synchronized for annotation " + annotation.key);
+    // Zotero may normalize the HTML during saving.
+    const savedNoteHTML = note.getNote() || content;
+
+    this._paperNoteGeneratedContent.set(
+        generatedNoteKey,
+        savedNoteHTML
+    );
+
+    // Synchronize every open editor for this research note.
+    const openEditors = Zotero.Notes?._editorInstances || [];
+
+    for (const editor of openEditors) {
+        if (
+            editor.itemID !== note.id
+            || typeof editor.applyIncrementalUpdate !== "function"
+        ) {
+            continue;
+        }
+
+        try {
+            editor.applyIncrementalUpdate(
+                { html: savedNoteHTML },
+                true
+            );
+
+            log(
+                "Research note editor refreshed: "
+                + editor.instanceID
+                + " | note: "
+                + note.id
+            );
+        }
+        catch (error) {
+            log(
+                "Research note editor refresh failed: "
+                + editor.instanceID
+                + " | "
+                + error
+            );
+        }
+    }
+
+    log(
+        "Paper research note rebuilt for PDF "
+        + attachmentID
+        + " | annotations: "
+        + entries.length
+    );
 },
-async _getResearchMetadata(libraryID) {
+async _syncAllPaperResearchNotes(libraryID = Zotero.Libraries.userLibraryID) {
+    const search = new Zotero.Search();
+    search.libraryID = libraryID;
+    search.addCondition("resultLevel", "annotation");
+
+    const ids = await search.search();
+    const annotations = [];
+
+    // Load all annotations before writing any research notes.
+    for (const id of ids) {
+        try {
+            const item = await Zotero.Items.getAsync(id);
+
+            if (!item || !item.isAnnotation?.()) continue;
+
+            if (!item.parentID) {
+                log("Skipping annotation without parent attachment: " + item.key);
+                continue;
+            }
+
+            annotations.push(item);
+        }
+        catch (e) {
+            log("Could not load annotation " + id + ": " + e);
+        }
+    }
+
+    // Keep annotations from the same PDF together and order them by page.
+    const getPageIndex = item => {
+        try {
+            const position = typeof item.annotationPosition === "string"
+                ? JSON.parse(item.annotationPosition)
+                : item.annotationPosition;
+
+            return typeof position?.pageIndex === "number"
+                ? position.pageIndex
+                : Number.MAX_SAFE_INTEGER;
+        }
+        catch (e) {
+            return Number.MAX_SAFE_INTEGER;
+        }
+    };
+
+    annotations.sort((a, b) =>
+        String(a.parentID).localeCompare(String(b.parentID))
+        || getPageIndex(a) - getPageIndex(b)
+        || String(a.key).localeCompare(String(b.key))
+    );
+
+    let synced = 0;
+    let failed = 0;
+
+    // Sequential writes prevent concurrent annotations from overwriting
+    // one another in the same paper research note.
+    for (let i = 0; i < annotations.length; i++) {
+        const item = annotations[i];
+
+        try {
+            await this._syncPaperResearchNote(item);
+            synced++;
+        }
+        catch (e) {
+            failed++;
+            log(
+                "Paper-note synchronization failed for "
+                + item.key + ": " + e
+            );
+        }
+
+        if ((i + 1) % 10 === 0 || i === annotations.length - 1) {
+            log(
+                "Paper-note backfill progress: "
+                + (i + 1) + "/" + annotations.length
+                + " | synchronized: " + synced
+                + " | failed: " + failed
+            );
+        }
+    }
+
+    const result = {
+        libraryID,
+        found: ids.length,
+        loaded: annotations.length,
+        synced,
+        failed
+    };
+
+    log("Paper-note backfill completed: " + JSON.stringify(result));
+
+    return result;
+},
+async _getResearchMetadataFromNote(libraryID) {
     const note = await this._findResearchMetadataNote(libraryID);
 
-if (!note) {
-    return {
+    if (!note) {
+        return {
+            version: 1,
+            themes: [],
+            experiments: [],
+            annotations: {}
+        };
+    }
+
+    try {
+        const content = note.getNote();
+        const markerIndex = content.indexOf(this.RESEARCH_METADATA_MARKER);
+        if (markerIndex === -1) throw new Error("Metadata marker not found");
+
+        const afterMarker = content.substring(markerIndex);
+        const match = afterMarker.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+        if (!match) throw new Error("Metadata JSON block not found");
+
+        const doc = new DOMParser().parseFromString(match[1], "text/html");
+        const json = doc.body.textContent.replace(/\u00a0/g, " ").trim();
+        const data = JSON.parse(json);
+
+        return {
+            version: 1,
+            themes: Array.isArray(data.themes) ? data.themes : [],
+            experiments: Array.isArray(data.experiments) ? data.experiments : [],
+            annotations: data.annotations && typeof data.annotations === "object"
+                ? data.annotations : {}
+        };
+    }
+    catch (e) {
+        log("Reading legacy research metadata failed: " + e);
+        throw e;
+    }
+},
+
+async _getAllResearchAnnotations(libraryID) {
+    const search = new Zotero.Search();
+    search.libraryID = libraryID;
+    search.addCondition("resultLevel", "annotation");
+
+    const ids = await search.search();
+    const annotations = [];
+
+    for (const id of ids) {
+        const item = await Zotero.Items.getAsync(id);
+        if (item?.isAnnotation?.() && item.libraryID === libraryID) {
+            annotations.push(item);
+        }
+    }
+
+    return annotations;
+},
+
+async _getResearchMetadata(libraryID) {
+    const metadata = {
         version: 1,
         themes: [],
         experiments: [],
         annotations: {}
     };
-}
 
-    try {
-        const content = note.getNote();
+    const themeCatalog = new Set();
+    const experimentCatalog = new Set();
+    const annotations = await this._getAllResearchAnnotations(libraryID);
 
-        // Zotero removes custom HTML attributes from note elements.
-        // Identify our JSON using the unique marker and following <pre>.
-        const markerIndex = content.indexOf(
-            this.RESEARCH_METADATA_MARKER
-        );
+    for (const item of annotations) {
+        const key = `${libraryID}:${item.key}`;
+        const saved = {
+            themes: [],
+            experiments: []
+        };
 
-        if (markerIndex === -1) {
-            throw new Error("Metadata marker not found");
+        for (const tagObject of item.getTags()) {
+            const tag = tagObject.tag || "";
+
+            if (tag.startsWith("RA:Theme:")) {
+                const value = tag.substring("RA:Theme:".length).trim();
+                if (value) saved.themes.push(value);
+            }
+            else if (tag.startsWith("RA:Experiment:")) {
+                const value = tag.substring("RA:Experiment:".length).trim();
+                if (value) saved.experiments.push(value);
+            }
         }
 
-        const afterMarker = content.substring(markerIndex);
+        saved.themes = [...new Set(saved.themes)];
+        saved.experiments = [...new Set(saved.experiments)];
 
-        const match = afterMarker.match(
-            /<pre[^>]*>([\s\S]*?)<\/pre>/i
-        );
-
-        if (!match) {
-            throw new Error("Metadata JSON block not found");
+        if (saved.themes.length || saved.experiments.length) {
+            metadata.annotations[key] = saved;
         }
 
-        const doc = new DOMParser().parseFromString(
-            match[1],
-            "text/html"
-        );
-
-        const json = doc.body.textContent
-            .replace(/\u00a0/g, " ")
-            .trim();
-
-        const data = JSON.parse(json);
-
-return {
-    version: 1,
-
-    themes: Array.isArray(data.themes)
-        ? data.themes
-        : [],
-
-    experiments: Array.isArray(data.experiments)
-        ? data.experiments
-        : [],
-
-    annotations:
-        data.annotations && typeof data.annotations === "object"
-            ? data.annotations
-            : {}
-};
+        for (const value of saved.themes) themeCatalog.add(value);
+        for (const value of saved.experiments) experimentCatalog.add(value);
     }
-    catch (e) {
-        log("Reading research metadata failed: " + e);
-        throw e;
-    }
+
+    metadata.themes = [...themeCatalog].sort((a, b) => a.localeCompare(b));
+    metadata.experiments = [...experimentCatalog].sort((a, b) => a.localeCompare(b));
+
+    return metadata;
 },
 
 async _saveResearchMetadata(libraryID, data) {
-    let note = await this._findResearchMetadataNote(libraryID);
+    const annotations = await this._getAllResearchAnnotations(libraryID);
+    let changedCount = 0;
 
-    const json = JSON.stringify(data, null, 2);
+    for (const item of annotations) {
+        const key = `${libraryID}:${item.key}`;
+        const saved = data.annotations?.[key] || {};
 
-    // Escape JSON before placing it inside HTML.
-    const escapedJSON = json
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+        const itemThemes = [...new Set(
+            (saved.themes || []).map(value => String(value).trim()).filter(Boolean)
+        )];
 
-    const html = `
-        <h1>ResearchAnnotator Metadata</h1>
-        <p>
-            This note is maintained automatically by ResearchAnnotator.
-            It stores research themes, experiments, and annotation
-            relationships.
-        </p>
-        <p>
-            Do not edit the structured data below manually.
-        </p>
-        <hr>
-        <div>${this.RESEARCH_METADATA_MARKER}</div>
-        <pre data-research-annotator="metadata">${escapedJSON}</pre>
-    `;
+        const itemExperiments = [...new Set(
+            (saved.experiments || []).map(value => String(value).trim()).filter(Boolean)
+        )];
 
-    // Create the managed note if it doesn't exist.
-    if (!note) {
-        note = new Zotero.Item("note");
-        note.libraryID = libraryID;
+        const desired = new Set([
+            ...itemThemes.map(value => "RA:Theme:" + value),
+            ...itemExperiments.map(value => "RA:Experiment:" + value)
+        ]);
+
+        let changed = false;
+
+        // Remove obsolete assignments and all old catalog tags.
+        for (const tagObject of item.getTags()) {
+            const tag = tagObject.tag || "";
+
+            const isAssignment =
+                tag.startsWith("RA:Theme:") ||
+                tag.startsWith("RA:Experiment:");
+
+            const isOldCatalog =
+                tag.startsWith("RA:ThemeCatalog:") ||
+                tag.startsWith("RA:ExperimentCatalog:");
+
+            if (isOldCatalog || (isAssignment && !desired.has(tag))) {
+                item.removeTag(tag);
+                changed = true;
+            }
+        }
+
+        // Convert retained and new ResearchAnnotator tags to automatic tags.
+        const existing = new Map(
+            item.getTags().map(tagObject => [
+                tagObject.tag,
+                Number(tagObject.type)
+            ])
+        );
+
+        for (const tag of desired) {
+            if (!existing.has(tag)) {
+                item.addTag(tag, 1);
+                changed = true;
+            }
+            else if (existing.get(tag) !== 1) {
+                item.removeTag(tag);
+                item.addTag(tag, 1);
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            await item.saveTx();
+            changedCount++;
+        }
     }
 
-    note.setNote(html);
-    await note.saveTx();
-
     log(
-        "Research metadata saved. Library: "
-        + libraryID
-        + " | Note: "
-        + note.key
+        "Research metadata saved as automatic Zotero tags. Library: " +
+        libraryID + " | Annotations updated: " + changedCount
     );
 
-    return note;
+    return { annotationsUpdated: changedCount };
+},
+
+async _migrateResearchMetadataToTags(libraryID) {
+    const note = await this._findResearchMetadataNote(libraryID);
+
+    if (!note) {
+        log("No legacy ResearchAnnotator metadata note found. Nothing to migrate.");
+        return { migrated: false, reason: "No legacy metadata note found." };
+    }
+
+    const legacy = await this._getResearchMetadataFromNote(libraryID);
+
+    // Merge any tags from an earlier or partial migration attempt.
+    // This makes migration retries non-destructive.
+    const existingTags = await this._getResearchMetadata(libraryID);
+
+    const mergeValues = (oldValues, newValues) => [
+        ...new Set([
+            ...(Array.isArray(oldValues) ? oldValues : []),
+            ...(Array.isArray(newValues) ? newValues : [])
+        ])
+    ];
+
+    legacy.themes = mergeValues(legacy.themes, existingTags.themes);
+    legacy.experiments = mergeValues(
+        legacy.experiments,
+        existingTags.experiments
+    );
+
+    for (const [key, tagged] of Object.entries(existingTags.annotations)) {
+        const oldSaved = legacy.annotations[key] || {};
+
+        legacy.annotations[key] = {
+            ...tagged,
+            ...oldSaved,
+            themes: mergeValues(oldSaved.themes, tagged.themes),
+            experiments: mergeValues(
+                oldSaved.experiments,
+                tagged.experiments
+            )
+        };
+    }
+
+    const annotations = await this._getAllResearchAnnotations(libraryID);
+
+    const hasLegacyData =
+        legacy.themes.length > 0 ||
+        legacy.experiments.length > 0 ||
+        Object.keys(legacy.annotations).length > 0;
+
+    if (!annotations.length && hasLegacyData) {
+        throw new Error(
+            "Migration stopped: the library has no annotations to store the metadata on. " +
+            "The original metadata note has been preserved."
+        );
+    }
+
+    const itemsByKey = new Map(
+        annotations.map(item => [`${libraryID}:${item.key}`, item])
+    );
+
+    for (const [key, saved] of Object.entries(legacy.annotations)) {
+        const hasData =
+            (saved.themes || []).length > 0 ||
+            (saved.experiments || []).length > 0 ||
+            Boolean(saved.researchComment);
+
+        if (hasData && !itemsByKey.has(key)) {
+            throw new Error(
+                "Migration stopped: an annotation with saved metadata could not be found: " +
+                key + ". The original metadata note has been preserved."
+            );
+        }
+    }
+
+    // Preserve legacy comments in Zotero's native annotation comment field.
+    for (const [key, saved] of Object.entries(legacy.annotations)) {
+        const legacyComment = String(saved.researchComment || "").trim();
+        if (!legacyComment) continue;
+
+        const item = itemsByKey.get(key);
+        if (!item) continue;
+
+        const existingComment = String(item.annotationComment || "").trim();
+
+        if (!existingComment) {
+            item.annotationComment = legacyComment;
+            await item.saveTx();
+        }
+        else if (!existingComment.includes(legacyComment)) {
+            item.annotationComment =
+                existingComment + "\n\n" + legacyComment;
+            await item.saveTx();
+        }
+    }
+
+    // Write only per-annotation assignments as automatic Zotero tags.
+    await this._saveResearchMetadata(libraryID, legacy);
+
+    // Read the tags back and verify annotation assignments before deleting
+    // the old note. Unassigned legacy catalog suggestions are intentionally
+    // not migrated because suggestions now derive from active assignments.
+    const migrated = await this._getResearchMetadata(libraryID);
+
+    const missingAssignments = [];
+    const missingComments = [];
+
+    for (const [key, saved] of Object.entries(legacy.annotations)) {
+        const actual = migrated.annotations[key] || {};
+
+        for (const value of (saved.themes || [])) {
+            if (!(actual.themes || []).includes(value)) {
+                missingAssignments.push(key + " theme: " + value);
+            }
+        }
+
+        for (const value of (saved.experiments || [])) {
+            if (!(actual.experiments || []).includes(value)) {
+                missingAssignments.push(key + " experiment: " + value);
+            }
+        }
+
+        const legacyComment = String(saved.researchComment || "").trim();
+
+        if (legacyComment) {
+            const item = itemsByKey.get(key);
+            const actualComment = String(item?.annotationComment || "");
+
+            if (!actualComment.includes(legacyComment)) {
+                missingComments.push(key);
+            }
+        }
+    }
+
+    if (missingAssignments.length || missingComments.length) {
+        throw new Error(
+            "Migration verification failed. The old metadata note was preserved. " +
+            "Missing assignments: " + missingAssignments.join(", ") +
+            " | Missing comments: " + missingComments.join(", ")
+        );
+    }
+
+    // Delete the old note only after successful read-back verification.
+    await note.eraseTx();
+
+    log(
+        "ResearchAnnotator metadata migration completed. Library: " +
+        libraryID + " | Annotations checked: " + annotations.length +
+        " | Legacy metadata note deleted."
+    );
+
+    return {
+        migrated: true,
+        annotationsChecked: annotations.length,
+        themes: migrated.themes.length,
+        experiments: migrated.experiments.length
+    };
 },
 async _updateResearchMetadata(libraryID, updater) {
     if (!this._researchMetadataQueues) {
@@ -1128,13 +2098,8 @@ async _removePaperResearchNoteEntry(libraryID, annotationKey) {
     search.addCondition("itemType", "is", "note");
 
     const ids = await search.search();
-
-    const escapedKey = annotationKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-    const entryPattern = new RegExp(
-        `<div>\\s*<p>RA_ENTRY_START:${escapedKey}<\\/p>[\\s\\S]*?<p>RA_ENTRY_END:${escapedKey}<\\/p>\\s*<\\/div>`,
-        "i"
-    );
+    const startMarker = `RA_ENTRY_START:${annotationKey}`;
+    const endMarker = `RA_ENTRY_END:${annotationKey}`;
 
     for (const id of ids) {
         const note = Zotero.Items.get(id);
@@ -1142,20 +2107,101 @@ async _removePaperResearchNoteEntry(libraryID, annotationKey) {
         if (!note || !note.isNote?.()) continue;
 
         const content = note.getNote() || "";
+        const startIndex = content.indexOf(startMarker);
 
-        if (!entryPattern.test(content)) continue;
+        if (startIndex < 0) continue;
 
-        note.setNote(content.replace(entryPattern, ""));
+        const endIndex = content.indexOf(
+            endMarker,
+            startIndex + startMarker.length
+        );
+
+        if (endIndex < 0) {
+            log("Found incomplete paper-note entry: " + annotationKey);
+            continue;
+        }
+
+        // Remove the complete managed entry wrapper.
+        // Zotero's note editor removes entry-level div wrappers.
+        // Remove only the two marker paragraphs and their contents.
+        const removeStart = content.lastIndexOf("<p", startIndex);
+        const startParagraphEnd = content.indexOf("</p>", startIndex);
+        const endParagraphEnd = content.indexOf("</p>", endIndex);
+        const removeEnd =
+            endParagraphEnd >= 0 ? endParagraphEnd + 4 : -1;
+
+        if (
+            removeStart < 0
+            || startParagraphEnd < 0
+            || startParagraphEnd >= endIndex
+            || removeEnd <= startParagraphEnd
+        ) {
+            log("Could not determine paper-note entry boundaries: " + annotationKey);
+            continue;
+        }
+
+        let updated =
+            content.slice(0, removeStart)
+            + content.slice(removeEnd);
+
+        // Renumber only ResearchAnnotator-managed annotation entries.
+        let entryNumber = 0;
+        let searchFrom = 0;
+        let markerIndex = updated.indexOf("RA_ENTRY_START:", searchFrom);
+
+        while (markerIndex !== -1) {
+            const endMarkerIndex = updated.indexOf(
+                "RA_ENTRY_END:",
+                markerIndex
+            );
+
+            const headingStart = updated.indexOf("<h2>", markerIndex);
+
+            if (endMarkerIndex === -1) break;
+
+            if (headingStart !== -1 && headingStart < endMarkerIndex) {
+                const headingEnd = updated.indexOf("</h2>", headingStart);
+
+                if (headingEnd !== -1 && headingEnd < endMarkerIndex) {
+                    const headingText = updated.slice(
+                        headingStart + 4,
+                        headingEnd
+                    ).replace(/^\d+\.\s*/, "");
+
+                    const numberedHeading =
+                        "<h2>" + (++entryNumber) + ". " + headingText + "</h2>";
+
+                    updated =
+                        updated.slice(0, headingStart)
+                        + numberedHeading
+                        + updated.slice(headingEnd + 5);
+                }
+            }
+
+            const nextSearch = updated.indexOf(
+                "RA_ENTRY_END:",
+                markerIndex
+            );
+
+            searchFrom = nextSearch === -1
+                ? updated.length
+                : nextSearch + "RA_ENTRY_END:".length;
+
+            markerIndex = updated.indexOf(
+                "RA_ENTRY_START:",
+                searchFrom
+            );
+        }
+
+        note.setNote(updated);
         await note.saveTx();
 
         log("Removed old paper-note entry: " + annotationKey);
-
         return true;
     }
 
     return false;
 },
-
 async handleConvertedAnnotation(id) {
     const item = await Zotero.Items.getAsync(id);
 
@@ -1217,15 +2263,9 @@ async handleConvertedAnnotation(id) {
             return true;
         });
 
-        const removedOldEntry =
-            await this._removePaperResearchNoteEntry(
-                libraryID,
-                oldKey
-            );
-
-        if (migratedMetadata || removedOldEntry) {
-            await this._syncPaperResearchNote(item);
-        }
+        // Do not remove the old entry here.
+        // The notification handler performs one complete rebuild after
+        // metadata migration, replacing stale entries with current annotations.
 
         this._pendingAnnotationConversions.delete(conversionKey);
 
@@ -4320,7 +5360,7 @@ if (annotationType === "highlight" || annotationType === "underline") {
         + "font-size:11px;"
         + "cursor:pointer;";
 
-    convertButton.addEventListener("click", () => {
+    convertButton.addEventListener("click", async () => {
         const internalReader = reader?._internalReader;
 
         if (!internalReader?.convertAnnotations) {
@@ -4333,35 +5373,69 @@ if (annotationType === "highlight" || annotationType === "underline") {
         try {
             const beforeIDs = this._readerAnnotationIDs(reader);
 
-            // Zotero performs the actual conversion and generates the new ID.
+            // Zotero may update its reader state asynchronously.
             const annotationIDs = Cu.cloneInto(
-                [annotation.id],
+                [item.key],
                 reader._iframeWindow
             );
 
-            internalReader.convertAnnotations(
+            const conversionResult = internalReader.convertAnnotations(
                 annotationIDs,
                 targetType
             );
 
-            const afterIDs = this._readerAnnotationIDs(reader);
+            if (
+                conversionResult
+                && typeof conversionResult.then === "function"
+            ) {
+                await conversionResult;
+            }
 
-            const addedIDs = [];
+            // Wait for the replacement annotation to appear in reader state
+            // and become available as a Zotero database item.
+            let newID = null;
+            let newItem = null;
 
-            afterIDs.forEach(newID => {
-                if (!beforeIDs.has(newID)) {
-                    addedIDs.push(newID);
+            for (let attempt = 0; attempt < 50; attempt++) {
+                const afterIDs = this._readerAnnotationIDs(reader);
+                const addedIDs = [];
+
+                afterIDs.forEach(candidateID => {
+                    if (!beforeIDs.has(candidateID)) {
+                        addedIDs.push(candidateID);
+                    }
+                });
+
+                if (addedIDs.length > 1) {
+                    throw new Error(
+                        "Expected one replacement annotation, found "
+                        + addedIDs.length
+                    );
                 }
-            });
 
-            if (addedIDs.length !== 1) {
+                if (addedIDs.length === 1) {
+                    newID = addedIDs[0];
+                    newItem = Zotero.Items.getByLibraryAndKey(
+                        item.libraryID,
+                        newID
+                    );
+
+                    if (newItem?.isAnnotation?.()) {
+                        break;
+                    }
+
+                    newItem = null;
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+
+            if (!newID || !newItem) {
                 throw new Error(
-                    "Expected one replacement annotation, found "
-                    + addedIDs.length
+                    "Timed out waiting for the converted annotation."
                 );
             }
 
-            const newID = addedIDs[0];
             const conversionKey = `${item.libraryID}:${newID}`;
 
             this._pendingAnnotationConversions.set(conversionKey, {
@@ -4377,7 +5451,7 @@ if (annotationType === "highlight" || annotationType === "underline") {
             });
 
             log(
-                "Native annotation conversion requested: "
+                "Native annotation conversion detected: "
                 + item.key
                 + " -> "
                 + newID
@@ -4385,15 +5459,80 @@ if (annotationType === "highlight" || annotationType === "underline") {
                 + targetType
                 + ")"
             );
+
+            // Migrate the old annotation's research metadata.
+            await this.handleConvertedAnnotation(newItem.id);
+
+            // Wait for any notifier-triggered migration to finish.
+            for (let attempt = 0; attempt < 50; attempt++) {
+                const pending =
+                    this._pendingAnnotationConversions.get(conversionKey);
+
+                if (!pending || !pending.processing) {
+                    break;
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+
+            // Verify the converted annotation survives subsequent
+            // conversion-related notifications and note rebuilds.
+            let verified = false;
+
+            for (let attempt = 0; attempt < 3; attempt++) {
+                if (attempt > 0) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+
+                const freshItem = await Zotero.Items.getAsync(newItem.id);
+
+                if (!freshItem?.isAnnotation?.()) {
+                    log("Converted annotation unavailable during verification.");
+                    continue;
+                }
+
+                await this._syncPaperResearchNote(freshItem);
+
+                const { note } =
+                    await this._getOrCreatePaperResearchNote(freshItem);
+
+                const expectedMarker =
+                    "RA_ENTRY_START:"
+                    + freshItem.libraryID
+                    + ":"
+                    + freshItem.key;
+
+                const savedHTML = note.getNote() || "";
+
+                verified = savedHTML.includes(expectedMarker);
+
+                log(
+                    "Conversion note verification "
+                    + (attempt + 1)
+                    + "/3: "
+                    + freshItem.key
+                    + " | present: "
+                    + verified
+                );
+            }
+
+            if (!verified) {
+                log(
+                    "WARNING: Converted annotation entry was not "
+                    + "verified in the research note."
+                );
+            }
+            else {
+                log(
+                    "Converted annotation entry verified in research note."
+                );
+            }
         }
         catch (e) {
             log("Native annotation conversion failed: " + e);
-
-
             convertButton.disabled = false;
         }
     });
-
     colorPanel.appendChild(convertButton);
 }
 
@@ -4506,6 +5645,21 @@ if (annotationType === "highlight" || annotationType === "underline") {
             try {
                 item.annotationColor = color.hex;
                 await item.saveTx();
+
+                const savedItem = await Zotero.Items.getAsync(item.id);
+
+                if (!savedItem?.isAnnotation?.()) {
+                    throw new Error("Could not reload annotation after color change.");
+                }
+
+                log(
+                    "Persisted annotation color: "
+                    + savedItem.key
+                    + " -> "
+                    + savedItem.annotationColor
+                );
+
+                await this._syncPaperResearchNote(savedItem);
 
                 updateSelectedColor();
 
@@ -4650,9 +5804,6 @@ if (annotationType === "highlight" || annotationType === "underline") {
                             annotationMetadata;
                     }
                 );
-
-                await this._syncPaperResearchNote(item);
-
                 if (
                     (themesInput.dataset.editVersion || "0") === themesVersion &&
                     themesInput.value === themesValue

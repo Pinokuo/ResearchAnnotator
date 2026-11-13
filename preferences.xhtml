@@ -75,6 +75,18 @@
     <html:option value="slanted">Slanted</html:option>
   </html:select>
 </html:div>
+<html:div class="annota-form">
+  <html:label class="annota-field-label" for="annota-paper-note-sort">
+    Research note entry order
+  </html:label>
+  <html:select id="annota-paper-note-sort" class="annota-input annota-w-md">
+    <html:option value="pdf">PDF reading order</html:option>
+    <html:option value="color">Group by annotation color</html:option>
+  </html:select>
+  <html:span class="annota-help">
+    Applies when a PDF research note is next synchronized.
+  </html:span>
+</html:div>
 <html:div class="annota-color-tools">
   <html:button id="annota-color-export" type="button" class="annota-button">
     Export color labels

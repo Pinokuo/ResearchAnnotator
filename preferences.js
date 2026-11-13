@@ -1027,6 +1027,22 @@ if (colorLabelLayoutInput) {
         );
     });
 }
+// Persistent ordering for generated PDF research notes.
+let paperNoteSortInput =
+    document.getElementById("annota-paper-note-sort");
+
+if (paperNoteSortInput) {
+    paperNoteSortInput.value =
+        Zotero.Prefs.get("annota.paperNoteSortOrder") || "pdf";
+
+    paperNoteSortInput.addEventListener("change", () => {
+        Zotero.Prefs.set(
+            "annota.paperNoteSortOrder",
+            paperNoteSortInput.value
+        );
+    });
+}
+
 // Import/export semantic color labels independently of AI configuration.
 let exportLabelsBtn = document.getElementById("annota-color-export");
 let importLabelsBtn = document.getElementById("annota-color-import");
