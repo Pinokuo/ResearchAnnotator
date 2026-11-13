@@ -712,11 +712,31 @@ async _handlePaperNoteNotification(event, id, extraData, notifiedAt) {
 async _syncPaperResearchNoteFromNote(note) {
     const content = note.getNote() || "";
     const doc = new DOMParser().parseFromString(content, "text/html");
-    const paragraphs = Array.from(doc.querySelectorAll("p"));
     const entries = [];
+    const entrySources = [];
+    const seenEntryKeys = new Set();
 
-    for (let i = 0; i < paragraphs.length; i++) {
-        const markerText = paragraphs[i].textContent.trim();
+    // New format: identifiers stored invisibly as HTML attributes.
+    for (const container of Array.from(
+        doc.querySelectorAll("div[data-ra-entry]")
+    )) {
+        const annotationKey =
+            container.getAttribute("data-ra-entry") || "";
+
+        if (!annotationKey || seenEntryKeys.has(annotationKey)) {
+            continue;
+        }
+
+        seenEntryKeys.add(annotationKey);
+        entrySources.push({ container, annotationKey });
+    }
+
+    // Legacy format: visible start/end marker paragraphs.
+    // Keep supporting these until old notes have been safely rebuilt.
+    const paragraphs = Array.from(doc.querySelectorAll("p"));
+
+    for (const paragraph of paragraphs) {
+        const markerText = paragraph.textContent.trim();
 
         if (!markerText.startsWith("RA_ENTRY_START:")) continue;
 
@@ -724,15 +744,27 @@ async _syncPaperResearchNoteFromNote(note) {
             "RA_ENTRY_START:".length
         );
 
-        const endMarker = `RA_ENTRY_END:${annotationKey}`;
-        const container = paragraphs[i].closest("div");
-
+        const container = paragraph.closest("div");
         if (!container) continue;
 
+        const attributeKey =
+            container.getAttribute("data-ra-entry") || "";
+
+        // Prefer the attribute if this container already has one.
+        if (attributeKey && attributeKey !== annotationKey) continue;
+
+        if (seenEntryKeys.has(annotationKey)) continue;
+
+        const endMarker = `RA_ENTRY_END:${annotationKey}`;
         const containerText = container.textContent || "";
+
         if (!containerText.includes(endMarker)) continue;
 
-        const separator = annotationKey.indexOf(":");
+        seenEntryKeys.add(annotationKey);
+        entrySources.push({ container, annotationKey });
+    }
+
+    for (const { container, annotationKey } of entrySources) {        const separator = annotationKey.indexOf(":");
         if (separator < 1) continue;
 
         const libraryID = Number(annotationKey.substring(0, separator));
@@ -1437,8 +1469,7 @@ async _syncPaperResearchNoteNow(annotation) {
             : "";
 
         const entryHTML = `
-            <div>
-                <p style="margin:0;padding:0;font-size:1px;line-height:1px;color:#888;">RA_ENTRY_START:${escapeHTML(annotationKey)}</p>
+            <div data-ra-entry="${escapeHTML(annotationKey)}">
                 <p><strong><mark${labelHighlightStyle}>${escapeHTML(colorLabel || (type === "highlight" ? "Highlight" : type === "underline" ? "Underline" : "Annotation"))}</mark></strong></p>
                 <h2>${annotationLink
                     ? `<a href="${annotationLink}" style="color:CanvasText !important;text-decoration:none !important;border-bottom:0;">${formattedText}</a>`
@@ -1454,7 +1485,6 @@ async _syncPaperResearchNoteNow(annotation) {
                 ${tags.length
                     ? `<p><strong>Tags:</strong> ${tags.map(escapeHTML).join(", ")}</p>`
                     : ""}
-                <p style="margin:0;padding:0;font-size:1px;line-height:1px;color:#888;">RA_ENTRY_END:${escapeHTML(annotationKey)}</p>
             </div>
         `;
 
@@ -1491,15 +1521,75 @@ async _syncPaperResearchNoteNow(annotation) {
     // Preserve the note heading and introductory text, but discard all
     // previous managed entries. This also removes duplicates and stale entries.
     let content = note.getNote() || "";
-    const firstManagedEntry = content.indexOf("RA_ENTRY_START:");
 
-    if (firstManagedEntry !== -1) {
-        // Preserve the note heading and attachment marker.
-        const firstEntryParagraph = content.lastIndexOf("<p", firstManagedEntry);
-        content = content.substring(
-            0,
-            firstEntryParagraph >= 0 ? firstEntryParagraph : firstManagedEntry
+
+
+    // Zotero strips custom entry attributes and wrapper divs when saving.
+    // Prefer the annotation link preserved in each managed heading.
+    const attributeIndex = content.indexOf("data-ra-entry=");
+    const markerIndex = content.indexOf("RA_ENTRY_START:");
+
+    let entryStart = -1;
+
+    if (attributeIndex >= 0) {
+        entryStart = content.lastIndexOf("<div", attributeIndex);
+    }
+    else if (markerIndex >= 0) {
+        const markerDivStart = content.lastIndexOf("<div", markerIndex);
+        const markerParagraphStart = content.lastIndexOf("<p", markerIndex);
+
+        entryStart = markerDivStart >= 0
+            ? markerDivStart
+            : markerParagraphStart;
+    }
+    else {
+        const headings = content.matchAll(
+            /<h2\b[^>]*>[\s\S]*?<\/h2>/gi
         );
+
+        for (const heading of headings) {
+            if (
+                /href=["']zotero:\/\/open-pdf\/[^"']*annotation=/i.test(
+                    heading[0]
+                )
+            ) {
+                // Include the generated colour-label paragraph immediately
+                // before the first managed annotation heading.
+                const precedingParagraphStart =
+                    content.lastIndexOf("<p", heading.index);
+
+                if (precedingParagraphStart >= 0) {
+                    const precedingParagraphEnd = content.indexOf(
+                        "</p>",
+                        precedingParagraphStart
+                    );
+
+                    const precedingParagraph =
+                        content.substring(
+                            precedingParagraphStart,
+                            precedingParagraphEnd >= 0
+                                ? precedingParagraphEnd + 4
+                                : heading.index
+                        );
+
+                    entryStart =
+                        precedingParagraphEnd >= 0
+                        && precedingParagraphEnd < heading.index
+                        && /<mark\b|background-color\s*:/i.test(precedingParagraph)
+                            ? precedingParagraphStart
+                            : heading.index;
+                }
+                else {
+                    entryStart = heading.index;
+                }
+                break;
+            }
+        }
+    }
+
+
+    if (entryStart >= 0) {
+        content = content.substring(0, entryStart);
     }
     const numberedEntries = entries.map((entry, index) =>
         entry.html.replace(
@@ -1543,44 +1633,13 @@ async _syncPaperResearchNoteNow(annotation) {
     // Zotero may normalize the HTML during saving.
     const savedNoteHTML = note.getNote() || content;
 
+
+
     this._paperNoteGeneratedContent.set(
         generatedNoteKey,
         savedNoteHTML
     );
 
-    // Synchronize every open editor for this research note.
-    const openEditors = Zotero.Notes?._editorInstances || [];
-
-    for (const editor of openEditors) {
-        if (
-            editor.itemID !== note.id
-            || typeof editor.applyIncrementalUpdate !== "function"
-        ) {
-            continue;
-        }
-
-        try {
-            editor.applyIncrementalUpdate(
-                { html: savedNoteHTML },
-                true
-            );
-
-            log(
-                "Research note editor refreshed: "
-                + editor.instanceID
-                + " | note: "
-                + note.id
-            );
-        }
-        catch (error) {
-            log(
-                "Research note editor refresh failed: "
-                + editor.instanceID
-                + " | "
-                + error
-            );
-        }
-    }
 
     log(
         "Paper research note rebuilt for PDF "
@@ -2107,102 +2166,156 @@ async _removePaperResearchNoteEntry(libraryID, annotationKey) {
         if (!note || !note.isNote?.()) continue;
 
         const content = note.getNote() || "";
-        const startIndex = content.indexOf(startMarker);
+        let updated = content;
+        let removed = false;
 
-        if (startIndex < 0) continue;
+        // New format: remove the complete hidden-attribute wrapper.
+        const attributeMarker = `data-ra-entry="${annotationKey}"`;
+        const attributeIndex = content.indexOf(attributeMarker);
 
-        const endIndex = content.indexOf(
-            endMarker,
-            startIndex + startMarker.length
-        );
+        if (attributeIndex >= 0) {
+            const openingStart = content.lastIndexOf("<div", attributeIndex);
+            const openingEnd = content.indexOf(">", attributeIndex);
 
-        if (endIndex < 0) {
-            log("Found incomplete paper-note entry: " + annotationKey);
-            continue;
-        }
+            if (openingStart < 0 || openingEnd < 0 || openingStart > attributeIndex) {
+                log("Could not locate hidden entry wrapper: " + annotationKey);
+                continue;
+            }
 
-        // Remove the complete managed entry wrapper.
-        // Zotero's note editor removes entry-level div wrappers.
-        // Remove only the two marker paragraphs and their contents.
-        const removeStart = content.lastIndexOf("<p", startIndex);
-        const startParagraphEnd = content.indexOf("</p>", startIndex);
-        const endParagraphEnd = content.indexOf("</p>", endIndex);
-        const removeEnd =
-            endParagraphEnd >= 0 ? endParagraphEnd + 4 : -1;
+            const divTagPattern = /<\/?div\b[^>]*>/gi;
+            divTagPattern.lastIndex = openingStart;
 
-        if (
-            removeStart < 0
-            || startParagraphEnd < 0
-            || startParagraphEnd >= endIndex
-            || removeEnd <= startParagraphEnd
-        ) {
-            log("Could not determine paper-note entry boundaries: " + annotationKey);
-            continue;
-        }
+            let depth = 0;
+            let closingEnd = -1;
+            let match;
 
-        let updated =
-            content.slice(0, removeStart)
-            + content.slice(removeEnd);
+            while ((match = divTagPattern.exec(content)) !== null) {
+                if (/^<\/div/i.test(match[0])) {
+                    depth--;
 
-        // Renumber only ResearchAnnotator-managed annotation entries.
-        let entryNumber = 0;
-        let searchFrom = 0;
-        let markerIndex = updated.indexOf("RA_ENTRY_START:", searchFrom);
-
-        while (markerIndex !== -1) {
-            const endMarkerIndex = updated.indexOf(
-                "RA_ENTRY_END:",
-                markerIndex
-            );
-
-            const headingStart = updated.indexOf("<h2>", markerIndex);
-
-            if (endMarkerIndex === -1) break;
-
-            if (headingStart !== -1 && headingStart < endMarkerIndex) {
-                const headingEnd = updated.indexOf("</h2>", headingStart);
-
-                if (headingEnd !== -1 && headingEnd < endMarkerIndex) {
-                    const headingText = updated.slice(
-                        headingStart + 4,
-                        headingEnd
-                    ).replace(/^\d+\.\s*/, "");
-
-                    const numberedHeading =
-                        "<h2>" + (++entryNumber) + ". " + headingText + "</h2>";
-
-                    updated =
-                        updated.slice(0, headingStart)
-                        + numberedHeading
-                        + updated.slice(headingEnd + 5);
+                    if (depth === 0) {
+                        closingEnd = divTagPattern.lastIndex;
+                        break;
+                    }
+                }
+                else {
+                    depth++;
                 }
             }
 
-            const nextSearch = updated.indexOf(
-                "RA_ENTRY_END:",
-                markerIndex
-            );
+            if (closingEnd < 0) {
+                log("Could not find closing wrapper for hidden entry: " + annotationKey);
+                continue;
+            }
 
-            searchFrom = nextSearch === -1
-                ? updated.length
-                : nextSearch + "RA_ENTRY_END:".length;
+            updated =
+                content.slice(0, openingStart)
+                + content.slice(closingEnd);
 
-            markerIndex = updated.indexOf(
-                "RA_ENTRY_START:",
-                searchFrom
-            );
+            removed = true;
         }
+        else {
+            // Legacy format: remove the complete entry wrapper.
+            const startIndex = content.indexOf(startMarker);
+
+            if (startIndex < 0) continue;
+
+            const endIndex = content.indexOf(
+                endMarker,
+                startIndex + startMarker.length
+            );
+
+            if (endIndex < 0) {
+                log("Found incomplete paper-note entry: " + annotationKey);
+                continue;
+            }
+
+            const openingStart = content.lastIndexOf("<div", startIndex);
+            const openingEnd = openingStart >= 0
+                ? content.indexOf(">", openingStart)
+                : -1;
+
+            if (openingStart < 0 || openingEnd < 0) {
+                log("Could not locate legacy entry wrapper: " + annotationKey);
+                continue;
+            }
+
+            const divTagPattern = /<\/?div\b[^>]*>/gi;
+            divTagPattern.lastIndex = openingStart;
+
+            let depth = 0;
+            let closingEnd = -1;
+            let match;
+
+            while ((match = divTagPattern.exec(content)) !== null) {
+                if (/^<\/div/i.test(match[0])) {
+                    depth--;
+
+                    if (depth === 0) {
+                        closingEnd = divTagPattern.lastIndex;
+                        break;
+                    }
+                }
+                else {
+                    depth++;
+                }
+            }
+
+            if (
+                closingEnd < 0
+                || openingStart > startIndex
+                || closingEnd <= endIndex
+            ) {
+                log("Could not determine legacy entry wrapper: " + annotationKey);
+                continue;
+            }
+
+            updated =
+                content.slice(0, openingStart)
+                + content.slice(closingEnd);
+
+            removed = true;
+        }
+
+        if (!removed) continue;
+
+        // Renumber only managed entry wrappers, preserving all other note HTML.
+        let entryNumber = 0;
+
+        updated = updated.replace(
+            /<div\b[^>]*>[\s\S]*?<\/div>/gi,
+            wrapper => {
+                const isManaged =
+                    /data-ra-entry\s*=/.test(wrapper)
+                    || wrapper.includes("RA_ENTRY_START:");
+
+                if (!isManaged) return wrapper;
+
+                return wrapper.replace(
+                    /<h2>([\s\S]*?)<\/h2>/i,
+                    (heading, headingContent) => {
+                        entryNumber++;
+
+                        const cleanHeading = headingContent.replace(
+                            /^\s*\d+\.\s*/,
+                            ""
+                        );
+
+                        return `<h2>${entryNumber}. ${cleanHeading}</h2>`;
+                    }
+                );
+            }
+        );
 
         note.setNote(updated);
         await note.saveTx();
 
-        log("Removed old paper-note entry: " + annotationKey);
+        log("Removed paper-note entry: " + annotationKey);
         return true;
     }
 
     return false;
-},
-async handleConvertedAnnotation(id) {
+},async handleConvertedAnnotation(id) {
     const item = await Zotero.Items.getAsync(id);
 
     if (!item || !item.isAnnotation?.()) {
@@ -5504,7 +5617,19 @@ if (annotationType === "highlight" || annotationType === "underline") {
 
                 const savedHTML = note.getNote() || "";
 
-                verified = savedHTML.includes(expectedMarker);
+                const savedDocument = new DOMParser().parseFromString(
+    savedHTML,
+    "text/html"
+);
+
+const expectedAttribute =
+    `${freshItem.libraryID}:${freshItem.key}`;
+
+verified =
+    savedDocument.querySelector(
+        `div[data-ra-entry="${expectedAttribute}"]`
+    ) !== null
+    || savedHTML.includes(expectedMarker);
 
                 log(
                     "Conversion note verification "
