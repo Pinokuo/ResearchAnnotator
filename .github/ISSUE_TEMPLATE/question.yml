@@ -1,0 +1,20 @@
+name: Ask a question
+description: Get help understanding a documented research workflow
+body:
+  - type: markdown
+    attributes:
+      value: Do not include private research data, credentials or full profiles. This beta has limited native platform verification.
+  - type: input
+    id: versions
+    attributes:
+      label: Operating system, Zotero and ResearchAnnotator versions
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question and research workflow
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: Guide section consulted and what you tried

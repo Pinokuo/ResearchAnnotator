@@ -193,4 +193,4 @@ Suggestion review allows editing source, target, type, explanation and cited ref
 
 Settings-only exports retain Network type/topic configuration without exporting scientific relationships, questions or suggestion history. Full research backups retain those records and use explicit library mapping during import. Pending AI review edits are retained during background refresh, including when an explanation is being typed.
 
-Delivered candidate: [20261116-223342-088](DEVELOPMENT-BUILD-20261116-223342-088.json). All 306 regression tests pass; the exact XPI passes isolated Zotero 10.0.8 Network interactions, restart persistence and retained Automatic/Manual AI-trigger verification. See [TESTING.md](TESTING.md) and its linked reports for evidence, performance and remaining live acceptance.
+Delivered candidate: `20261116-223342-088` (local verification artifact). All 306 regression tests pass; the exact XPI passes isolated Zotero 10.0.8 Network interactions, restart persistence and retained Automatic/Manual AI-trigger verification. See [TESTING.md](TESTING.md) and its linked reports for evidence, performance and remaining live acceptance.

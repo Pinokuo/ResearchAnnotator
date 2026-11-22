@@ -140,4 +140,4 @@ development profile. Image/area annotations retain existing textual fallback/sou
 links; no new image embedding or OCR pipeline is introduced. JSON snapshots and
 job/configuration history retain the earlier scaling limitations.
 
-Research Note Generation artifact: [20261116-075249-726](DEVELOPMENT-BUILD-20261116-075249-726.json), C:/Users/Ahmed/Documents/ResearchAnnotatorBuilds/ResearchAnnotator-dev-20261116-075249-726.xpi. Version 2.42.0; ID researchannotator@pino; 24 packaged files byte-verified; 190 tests passed. Package SHA256: `3dd445d3990821d7dd4c4fb39430883233bfb7cb024e542277676622c112bdcc`. Native Zotero acceptance pending.
+Research Note Generation artifact: `20261116-075249-726` (local verification artifact), ResearchAnnotatorBuilds/ResearchAnnotator-dev-20261116-075249-726.xpi. Version 2.42.0; ID researchannotator@pino; 24 packaged files byte-verified; 190 tests passed. Package SHA256: `3dd445d3990821d7dd4c4fb39430883233bfb7cb024e542277676622c112bdcc`. Native Zotero acceptance pending.

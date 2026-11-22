@@ -1,0 +1,28 @@
+name: Beta bug report
+description: Report a reproducible ResearchAnnotator problem without private data
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, private PDFs, full profiles or research exports. Use synthetic data where possible.
+  - type: input
+    id: versions
+    attributes:
+      label: Extension, Zotero and operating system versions
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted diagnostics or screenshots

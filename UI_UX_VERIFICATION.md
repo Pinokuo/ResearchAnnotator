@@ -1,9 +1,9 @@
 # UI/UX consolidation delivery evidence
 
 Final development XPI:
-[ResearchAnnotator-dev-20261117-080817-709.xpi](C:/Users/Ahmed/Documents/ResearchAnnotatorBuilds/ResearchAnnotator-dev-20261117-080817-709.xpi).
+`ResearchAnnotator-dev-20261117-080817-709.xpi` (local verification artifact).
 Baseline: 20261117-004427-283. Build inventory:
-[DEVELOPMENT-BUILD-20261117-080817-709.json](DEVELOPMENT-BUILD-20261117-080817-709.json).
+`DEVELOPMENT-BUILD-20261117-080817-709.json` (local verification artifact).
 
 ## Implementation
 

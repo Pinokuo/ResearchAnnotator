@@ -1,3 +1,7 @@
+
+## Documentation investigation findings (2026-11-22)
+
+The unchanged beta masks native Zotero timeout details as `API (HTTP ?)` when no xmlhttp is attached; a controlled native timeout comparison confirms this. The earlier qwen3:4b request reached a deliberately shortened 60-second test limit during cold-start/thinking generation. Real qwen2.5:7b generation, AI/manual/native-data preservation and a grounded citation now pass. Retry also appears outside failed-field states in native screenshots. These diagnostic/UI limitations are documented, not fixed by this documentation commit. See [local AI setup](docs/local-ai.md#verified-local-model-example-and-thinking-model-caution).
 ## Public beta milestone (2026-11-22)
 
 The 2.43.0-beta.1 milestone supersedes the prior deletion-regeneration policy: intentional managed-note deletion persists a management tombstone until explicit Recreate / Resume management. Add inline palette actions and packaged logo; per-note color order with explicit one-time rebuilds in all modes; previewed native highlight color mapping with persistent jobs, recoverable journals and conflict-aware Undo. Preserve structured data and PDF bytes; never import embedded annotations automatically or generate AI during mapping. See BETA_READINESS.md, INSTALLATION.md and CHANGELOG.md for current behavior and compatibility.
@@ -536,9 +540,9 @@ checks reproduced B01, B02, B04, B06, B12 and B13 logic. These checks were ephem
 not committed tests. No provider request, Zotero UI test, restart, packaging,
 release or data migration was performed. No defect is marked fixed.
 
-Current color-layout artifact: `C:/Users/Ahmed/Documents/ResearchAnnotatorBuilds/ResearchAnnotator-dev-20261116-011737-134.xpi`. Build inventory: [DEVELOPMENT-BUILD-20261116-011737-134.json](DEVELOPMENT-BUILD-20261116-011737-134.json). Total: 118 passing tests (all 114 retained); package-dev.ps1 verified all 20 runtime files.
+Current color-layout artifact: `ResearchAnnotatorBuilds/ResearchAnnotator-dev-20261116-011737-134.xpi`. Build inventory: `DEVELOPMENT-BUILD-20261116-011737-134.json` (local verification artifact). Total: 118 passing tests (all 114 retained); package-dev.ps1 verified all 20 runtime files.
 
-Data Infrastructure artifact: `C:/Users/Ahmed/Documents/ResearchAnnotatorBuilds/ResearchAnnotator-dev-20261116-020142-005.xpi`. [Exact build inventory](DEVELOPMENT-BUILD-20261116-020142-005.json). Version 2.42.0; ID researchannotator@pino; 21 packaged files verified. 162 tests passed.
+Data Infrastructure artifact: `ResearchAnnotatorBuilds/ResearchAnnotator-dev-20261116-020142-005.xpi`. `Exact build inventory` (local verification artifact). Version 2.42.0; ID researchannotator@pino; 21 packaged files verified. 162 tests passed.
 
 
 Final packaged refinement and shared workflows pass 60 isolated native checks; 398 regression tests pass. Additional native platform/scaling/group-library acceptance remains as documented in REFINEMENT_AUDIT.md.

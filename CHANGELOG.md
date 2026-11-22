@@ -1,5 +1,9 @@
 # Changelog
 
+## Private documentation consolidation (2026-11-22)
+
+The existing independent repository now consolidates the reviewed visual README, canonical docs/, optional Python advisor and same-repository feedback templates. The beta XPI and application identities/code remain unchanged; repository visibility and the existing draft release remain private/unpublished. See [consolidation status](docs/release/private-consolidation.md) and [update-feed proposal](docs/release/update-feed-proposal.md). Real local instruct-model and mapper checks supplement the previous beta evidence; no production readiness claim is made.
+
 ## 2.43.0-beta.1 — first public beta candidate
 
 - Restore the packaged settings logo and inline color-management controls.

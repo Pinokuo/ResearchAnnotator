@@ -1,0 +1,13 @@
+{
+  "checked": "2026-11-22",
+  "chat": [
+    {"id":"qwen3:1.7b","weights_gb":1.4,"planning_ram_gib":8,"comfortable_ram_gib":16,"planning_vram_gib":4,"reason":"Smallest starting candidate; lower resource use, more limited synthesis and structured-output reliability."},
+    {"id":"qwen3:4b","weights_gb":2.5,"planning_ram_gib":16,"comfortable_ram_gib":32,"planning_vram_gib":6,"reason":"Moderate starting candidate for short grounded questions; still requires source checking."},
+    {"id":"qwen3:8b","weights_gb":5.2,"planning_ram_gib":32,"comfortable_ram_gib":64,"planning_vram_gib":12,"reason":"Larger candidate when memory permits; slower CPU use and larger context cache."}
+  ],
+  "embedding": [
+    {"id":"nomic-embed-text","weights_gb":0.274,"reason":"Optional small embedding candidate; does not generate answers."},
+    {"id":"embeddinggemma","weights_gb":0.622,"reason":"Optional multilingual embedding candidate; requires Ollama 0.11.10 or newer."}
+  ],
+  "notes":"Conservative planning thresholds, not measured fit requirements or benchmarks. Q4-class example chat weights. Start with modest context and inspect actual allocations. Keyword retrieval needs no embedding model."
+}

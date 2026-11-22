@@ -1,0 +1,1 @@
+0ee254179983a77cbd1c784da06b15fd0d5ea4ff437c3acbdc241a379947652e  ResearchAnnotator-2.43.0-beta.1.xpi

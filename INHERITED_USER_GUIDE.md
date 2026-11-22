@@ -631,9 +631,9 @@ broke. Six of the last releases came from exactly that.
 
 ## ☕ Buy me a coffee
 
-If Annota saves you time, you can buy me a coffee.
+Support continued ResearchAnnotator development:
 
-[![Buy me a coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=&slug=liotou&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff)](https://buymeacoffee.com/liotou)
+[![Support ResearchAnnotator on Buy Me a Coffee](https://img.shields.io/badge/Buy_Me_a_Coffee-Support_ResearchAnnotator-FFDD00?logo=buymeacoffee&logoColor=000000)](https://buymeacoffee.com/researchannotator)
 
 I said at the top that this plugin was written by vibe coding with Claude, and
 I stand by it. But a model does not know what a highlight comment should look

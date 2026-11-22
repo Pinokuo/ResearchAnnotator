@@ -1,0 +1,15 @@
+name: Feature request
+description: Explain a research workflow and proposed improvement
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Research task and current limitation
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Desired behavior and current workaround
+    validations:
+      required: true

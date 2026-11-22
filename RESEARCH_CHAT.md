@@ -205,6 +205,6 @@ blocked; no unsupported synchronization mechanism is added.
 
 The inherited scope shortcuts (including multiple collections) remain secondary controls. Optional note editing reuses the existing bounded note context, opaque preservation tokens, proposal/apply/undo controls and truncated-note replacement guard; new grounded proposals cannot target unsupplied notes. Saved Chat notes retain original PDF page links. Embedding configuration is local to the profile; rebuild/reconfigure local indexes and embedding models when moving research data.
 
-Final integrated candidate: [20261117-004427-283](DEVELOPMENT-BUILD-20261117-004427-283.json). Exact packaged and restart evidence is linked from [TESTING.md](TESTING.md).
+Final integrated candidate: `20261117-004427-283` (local verification artifact). Exact packaged and restart evidence is linked from [TESTING.md](TESTING.md).
 
 To update old presentation choices after installing, open Notes > Manage existing notes > Apply simplified content defaults. Choose library/type scope, list and select configurations, preview differences, then confirm replacement. Existing explicit settings otherwise remain intact. Final build SHA256: `f94e396e434b7177c2bb27f366e428d1fc7b9be80cc7c77a6794c8de5002c8e1`.

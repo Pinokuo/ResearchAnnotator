@@ -37,7 +37,7 @@ The owner pulls batch application of simplified content defaults and clear setti
 
 ## Unified Workspace usability follow-up (2026-11-16)
 
-Implemented the owner's 095828 follow-up: immediate AI instructions, audited color settings, permanently expanded layout/order, configurable findings-first PDF notes and grouped publication metadata, functional native dropdowns, four-tab progressive disclosure and ResearchAnnotator Tools submenu. [Control inventory and decisions](WORKSPACE_USABILITY.md). Candidate [175519-328](DEVELOPMENT-BUILD-20261116-175519-328.json): 252 passing tests, including all prior 242; actual packaged-XPI dropdown selection verified in isolated Zotero 10.0.8. Owner-library acceptance remains. Knowledge Network, deferred color geometry, complete rebranding and English standardization remain deferred.
+Implemented the owner's 095828 follow-up: immediate AI instructions, audited color settings, permanently expanded layout/order, configurable findings-first PDF notes and grouped publication metadata, functional native dropdowns, four-tab progressive disclosure and ResearchAnnotator Tools submenu. [Control inventory and decisions](WORKSPACE_USABILITY.md). Candidate `175519-328` (local verification artifact): 252 passing tests, including all prior 242; actual packaged-XPI dropdown selection verified in isolated Zotero 10.0.8. Owner-library acceptance remains. Knowledge Network, deferred color geometry, complete rebranding and English standardization remain deferred.
 
 
 ## Unified Research Workspace overlay (2026-11-16)
@@ -167,7 +167,7 @@ field build. Source existence and commit titles alone never establish functional
 Current HEAD is `63f630ba1974a4615f06c255f2d86e14b2a9ae66`, with substantial
 uncommitted implementation and documentation. Current integrated usability build
 is `20261116-003544-943`, internal version 2.42.0; exact source/package hashes
-are in [the build inventory](DEVELOPMENT-BUILD-20261116-003544-943.json). The preceding integrated build
+are in `the build inventory` (local verification artifact). The preceding integrated build
 `20261115-233530-384` is retained. The current suite passes 114 tests, preserving
 all 93 preceding cases. A commit hash alone cannot reproduce this working tree.
 No live UI/provider, cross-device import or real filesystem interruption acceptance
