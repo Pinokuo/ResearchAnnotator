@@ -1,22 +1,65 @@
 /* eslint-disable no-undef */
-// Annota — extension Zotero 7 → 10
-// À la création d'un surlignage, exécute un prompt configurable sur le texte
-// surligné et place la sortie du modèle dans le commentaire de l'annotation.
+// ResearchAnnotator — Zotero 7 through 10 extension
+// On highlight creation, apply the configured AI policy to its source text.
+// Persist results in structured fields; native Comment remains independent.
 
 var Annota;
 
-const PREF_BRANCH = "annota.";
+const PREF_BRANCH = "researchannotator.";
 
-// Commentaire temporaire affiché pendant l'appel réseau (écrit puis remplacé).
+// Legacy temporary placeholder used during a network call, then replaced.
 const PLACEHOLDER = "⏳ Generating…";
 
 function getPref(key, fallback) {
 	let val = Zotero.Prefs.get(PREF_BRANCH + key);
 	return (val === undefined || val === null) ? fallback : val;
+
+}
+function migratePreferences() {
+    const oldBranch = "extensions.zotero.annota.";
+    const newBranch = "extensions.zotero.researchannotator.";
+
+    try {
+        const oldKeys = Services.prefs
+            .getBranch(oldBranch)
+            .getChildList("", {});
+
+        let copied = 0;
+
+        for (const key of oldKeys) {
+            const oldKey = "annota." + key;
+            const newKey = "researchannotator." + key;
+
+            // Only migrate settings explicitly saved by the user.
+            if (!Zotero.Prefs.prefHasUserValue(oldKey, true)) {
+                continue;
+            }
+
+            // Never overwrite an existing user setting.
+            if (Zotero.Prefs.prefHasUserValue(newKey, true)) {
+                continue;
+            }
+
+            const value = Zotero.Prefs.get(oldKey, true);
+            Zotero.Prefs.set(newKey, value, true);
+            copied++;
+        }
+
+        Zotero.debug(
+            `[ResearchAnnotator] Preference migration complete: ${copied} setting(s) copied.`
+        );
+
+        return copied;
+    } catch (error) {
+        Zotero.debug(
+            `[ResearchAnnotator] Preference migration failed: ${error}`
+        );
+        return 0;
+    }
 }
 
 function log(msg) {
-	Zotero.debug("[Annota] " + msg);
+	Zotero.debug("[ResearchAnnotator] " + msg);
 }
 
 function toast(title, body, type = "default") {
@@ -46,24 +89,24 @@ Annota = {
 	inProgress: new Set(),
     _pendingAnnotationConversions: new Map(),
 
-	// Il n'existe volontairement AUCUN prompt par défaut : chaque couleur de
-	// surlignage a le sien, et une couleur sans prompt n'est pas traitée du tout.
-	// C'est ce qui permet de n'activer la génération que sur certaines couleurs.
+	// There is deliberately no default color-wide prompt: each highlight color
+	// has its own configuration, and an unconfigured color is not processed.
+	// This allows generation to be enabled for selected colors only.
 	//
-	// Variables substituées à l'exécution :
-	//   {{text}}        texte surligné (voir buildMessages pour le mode avancé)
-	//   {{title}}       titre du document source
-	//   {{authors}}     auteurs du document source (noms, séparés par des virgules)
-	//   {{year}}        année du document source
-	//   {{abstract}}    résumé du document source (tronqué selon les préférences)
+	// Variables substituted at runtime:
+	// {{text}} highlighted text; see buildMessages for advanced mode.
+	// {{title}} source document title
+	// {{authors}} source authors, with names separated by commas.
+	// {{year}} source publication year.
+	// {{abstract}} source abstract, truncated by the configured limit.
 	//   {{publication}} revue / ouvrage / actes
-	//   {{page}}        page du passage surligné
-	//   {{maxWords}}    réglage « longueur max »
-	//   {{language}}    réglage « langue de sortie »
-	// Des exemples de prompts sont fournis dans PROMPT-EXAMPLES.txt.
+	// {{page}} page containing the highlighted passage.
+	// {{maxWords}} maximum output length setting.
+	// {{language}} output language setting.
+	// Prompt examples are provided in PROMPT-EXAMPLES.txt.
 
-	// Palette de secours, si Zotero.Annotations.COLORS était indisponible.
-	// Doit rester alignée sur chrome/content/zotero/xpcom/annotations.js.
+	// Fallback palette when Zotero.Annotations.COLORS is unavailable.
+	// Keep aligned with chrome/content/zotero/xpcom/annotations.js.
 	FALLBACK_COLORS: [
 		{ hex: "#ffd400", name: "Yellow" },
 		{ hex: "#ff6666", name: "Red" },
@@ -75,9 +118,9 @@ Annota = {
 		{ hex: "#aaaaaa", name: "Gray" }
 	],
 
-	// Palette de surlignage lue directement depuis Zotero : elle reste ainsi
-	// identique à celle du sélecteur de couleurs du lecteur, même si Zotero
-	// la fait évoluer. Format source : [clé l10n, hex].
+	// Read the native highlight palette directly from Zotero so it stays
+	// Matches the reader's native color picker even when Zotero
+	// changes its palette. Source format: [localization key, hex].
 	get COLORS() {
 		try {
 			let raw = Zotero.Annotations && Zotero.Annotations.COLORS;
@@ -89,12 +132,12 @@ Annota = {
 			}
 		}
 		catch (e) {
-			log("COLORS: lecture de la palette Zotero impossible, repli : " + e);
+			log("COLORS: native palette unavailable; using fallback: " + e);
 		}
 		return this.FALLBACK_COLORS.map(c => ({ hex: c.hex, name: this.colorLabel(c.name) }));
 	},
 
-	// Nom d'une teinte dans la langue de l'interface (« yellow » → « Jaune »).
+	// Localized shade name, for example yellow in the current UI language.
 	colorLabel(raw) {
 		let base = String(raw || "").toLowerCase();
 		let key = "color." + base;
@@ -102,7 +145,7 @@ Annota = {
 		return tr !== key ? tr : base.replace(/^./, m => m.toUpperCase());
 	},
 
-	// Prompts par couleur : { "#ff6666": "…", … }. Vide = utiliser le prompt par défaut.
+	// Historical color prompt map; empty values have no configured prompt.
 	getColorPrompts() {
 		try {
 			let raw = String(getPref("colorPrompts", "") || "").trim();
@@ -111,14 +154,14 @@ Annota = {
 			return (obj && typeof obj === "object") ? obj : {};
 		}
 		catch (e) {
-			log("colorPrompts illisible (JSON invalide), ignoré : " + e);
+			log("Invalid colorPrompts JSON retained but ignored: " + e);
 			return {};
 		}
 	},
 
-	// Les zones encadrées (images, tableaux, parties de page) ont leurs propres
-	// réglages par couleur, rangés dans le même JSON sous « image:#hex ».
-	// Toute fonction qui reçoit une « couleur » accepte aussi cette clé.
+	// Areas around figures, tables or page regions have their own
+	// per-color settings in the same JSON under image:#hex.
+	// Functions accepting a color also accept this area key.
 	colorKey(color, type) {
 		let hex = String(color || "").toLowerCase();
 		return type === "image" ? "image:" + hex : hex;
@@ -136,13 +179,13 @@ Annota = {
 		return Object.keys(this.getColorPrompts()).some(k => this.isImageKey(k) && this.getColorEntry(k));
 	},
 
-	// Réglage d'une couleur, normalisé : { prompt, trigger, template } ou null.
-	// Rétrocompat : une valeur chaîne = { prompt, trigger: "auto", template: "" }.
-	// trigger  "auto"   = génère à la création du surlignage
-	//          "manual" = uniquement via le menu contextuel
-	// template = gabarit du commentaire final ; vide = la réponse de l'IA seule.
-	// Une couleur est active si elle a un prompt OU un gabarit (un gabarit sans
-	// {{ai}} produit un commentaire entièrement déterministe, sans appel IA).
+	// Normalized color configuration: { prompt, trigger, template }, or null.
+	// Compatibility: a string means { prompt, trigger: 'auto', template: '' }.
+	// Automatic triggers missing AI fields when the annotation is created.
+	// Manual requires an explicit generation action.
+	// Legacy structured-output template; empty uses the model response.
+	// A historical entry can have a prompt or a template; a template without
+	// {{ai}} is deterministic and needs no model request.
 	getColorEntry(color) {
 		if (!color) return null;
 		let raw = this.getColorPrompts()[String(color).toLowerCase()];
@@ -156,10 +199,10 @@ Annota = {
 		let prompt = String(raw.prompt || "");
 		let template = String(raw.template || "");
 		let fields = String(raw.fields || "");
-		// Un libellé seul n'active pas une couleur : il nomme une configuration,
-		// il n'en tient pas lieu. Sinon une couleur sans champ ni prompt
-		// passerait pour configurée et ne produirait rien.
-		if (!prompt.trim() && !template.trim() && !fields.trim()) return null;
+		// A label alone names a configuration but does not activate generation.
+		// Otherwise a color without fields or a prompt would appear configured
+		// while producing no output.
+		if (!prompt.trim() && !template.trim() && !fields.trim() && !["auto","manual"].includes(raw.trigger)) return null;
 		return {
 			prompt,
 			template,
@@ -169,21 +212,21 @@ Annota = {
 		};
 	},
 
-	// ---- Champs personnalisés par couleur ----
+	// Per-color custom fields.
 	//
-	// Syntaxe, une ligne par champ :  nom | Libellé | type | options
-	//   type ∈ text (défaut) | textarea | check | select
-	//   options : pour « select », les choix séparés par des virgules.
-	// Chaque champ devient une variable {{nom}} dans le prompt ET le gabarit.
-	// Les noms réservés (variables intégrées) sont ignorés pour éviter qu'un
-	// champ n'écrase silencieusement {{text}}, {{comment}}, etc.
+	// One field per line: name | Label | type | options.
+	// Types: text (default), textarea, check or select.
+	// For select, options are comma-separated choices.
+	// Each field becomes a {{name}} variable in prompts and templates.
+	// Ignore reserved built-in names so a field cannot silently
+	// overwrite {{text}}, {{comment}} or another built-in variable.
 	RESERVED_VARS: [
 		"text", "comment", "title", "authors", "year", "abstract",
 		"publication", "page", "references", "maxWords", "language", "ai"
 	],
 
-	// Mises en forme reconnues, appliquées à la valeur du champ dans le
-	// commentaire final. « plain » laisse le texte tel quel.
+	// Supported formatting is applied to the field value in the generated
+	// structured output. Plain leaves the value unchanged.
 	FORMATS: {
 		plain: v => v,
 		bold: v => "<b>" + v + "</b>",
@@ -194,8 +237,8 @@ Annota = {
 
 	_normFormat(w) {
 		let k = String(w || "").toLowerCase().replace(/[\s_-]/g, "");
-		// Une colonne vide n'est PAS un format : sans cela « plain » serait
-		// retenu et la colonne précédente ne serait jamais examinée.
+		// An empty column is not a format; treating it as plain would prevent
+		// the preceding column from being inspected.
 		if (!k) return null;
 		if (k === "gras") k = "bold";
 		if (k === "italique") k = "italic";
@@ -204,8 +247,8 @@ Annota = {
 		return Object.prototype.hasOwnProperty.call(this.FORMATS, k) ? k : null;
 	},
 
-	// À quoi sert chaque nom réservé : le dire vaut mieux que « nom réservé »,
-	// qui n'apprend rien à qui vient de perdre un champ.
+	// Explain the purpose of reserved names instead of merely reporting
+	// a reserved-name error after a user's field has been ignored.
 	RESERVED_HINTS: {
 		text: "the highlighted passage",
 		comment: "the comment already in the annotation",
@@ -221,20 +264,20 @@ Annota = {
 		ai: "the model's reply"
 	},
 
-	// Un nom de repli toujours valide et prévisible : « page » → « myPage ».
+	// Always-valid predictable fallback name, for example page to myPage.
 	suggestName(name) {
 		return "my" + String(name).replace(/^./, m => m.toUpperCase());
 	},
 
-	// Relit un schéma de champs et signale ce qui sera ignoré ou mal compris.
-	// parseFieldSchema, lui, se tait et continue : c'est le bon comportement à
-	// l'exécution, mais dans les réglages il faut le dire. Renvoie une liste de
-	// { line, level, message } — « error » = ce que vous écrivez ne sera pas
-	// appliqué, « warn » = appliqué autrement que prévu.
+	// Review a field schema and report ignored or ambiguous definitions.
+	// parseFieldSchema continues silently at runtime, but settings must
+	// explain the problem. Return a list of diagnostic objects:
+	// { line, level, message }; error means the definition will not apply,
+	// and warn means its behavior differs from the apparent intent.
 	validateFieldSchema(raw) {
 		let out = [], seen = new Map();
 		let lines = String(raw || "").split("\n");
-		const TYPES = ["text", "textarea", "check", "select", "ai"];
+		const TYPES = ["text", "textarea", "check", "select", "multiselect", "ai"];
 
 		for (let i = 0; i < lines.length; i++) {
 			let line = lines[i].trim();
@@ -272,13 +315,13 @@ Annota = {
 					message: this.t("lint.type", { type: parts[2] }) });
 			}
 
-			// Reproduit la lecture des colonnes 4 et 5 de parseFieldSchema.
+			// Match parseFieldSchema's interpretation of columns four and five.
 			let col4 = parts[3] || "", col5 = parts[4] || "";
 			let format = this._normFormat(col5);
 			let extra = col4;
 			if (!format) {
 				let asFormat = this._normFormat(col4);
-				if (asFormat && type !== "ai" && !(type === "select" && col4.includes(","))) {
+				if (asFormat && type !== "ai" && type !== "multiselect" && !(type === "select" && col4.includes(","))) {
 					extra = "";
 				}
 			}
@@ -298,9 +341,9 @@ Annota = {
 		return out;
 	},
 
-	// Variables employées dans un prompt ou une disposition qui ne correspondent
-	// ni à un champ déclaré ni à une variable intégrée : presque toujours une
-	// faute de frappe, et elles se substituent en silence par du vide.
+	// Variables used in prompts or layouts that match neither a declared
+	// field nor a built-in variable are almost always a typing error.
+	// a typo, and they silently substitute an empty value.
 	validateVariables(where, tpl, schema) {
 		let known = this.RESERVED_VARS.concat(schema.map(f => f.name));
 		let seen = new Set(), out = [];
@@ -315,7 +358,7 @@ Annota = {
 		return out;
 	},
 
-	// Contrôle complet d'une couleur, pour le panneau de réglages.
+	// Complete per-color validation for the settings panel.
 	lintColorEntry(entry) {
 		entry = entry || {};
 		let out = this.validateFieldSchema(entry.fields);
@@ -323,7 +366,7 @@ Annota = {
 		out = out.concat(this.validateVariables(this.t("lint.where.prompt"), entry.prompt, schema));
 		out = out.concat(this.validateVariables(this.t("lint.where.layout"), entry.template, schema));
 
-		// {{ai}} n'a de sens que dans la disposition.
+		// {{ai}} is meaningful only in the output layout.
 		if (/\{\{\s*ai\s*\}\}/.test(String(entry.prompt || ""))) {
 			out.push({ line: 0, level: "warn",
 				message: this.t("lint.aiprompt") });
@@ -331,10 +374,10 @@ Annota = {
 		return out;
 	},
 
-	// Syntaxe :  nom | Libellé | type | options | format
-	// Le format peut occuper la 4e OU la 5e colonne : s'il est reconnu en 4e,
-	// c'est un format, sinon ce sont les options (choix d'un « select », ou
-	// consigne d'un champ « ai »). Cela garde la compatibilité ascendante.
+	// Syntax: name | Label | type | options | format.
+	// The format can occupy column four or five. A recognized fourth-column
+	// format is used as such; otherwise it contains options or instructions
+	// for an AI field. This preserves older schemas.
 	parseFieldSchema(raw) {
 		let out = [];
 		for (let line of String(raw || "").split("\n")) {
@@ -344,20 +387,20 @@ Annota = {
 			let name = (parts[0] || "").replace(/[^\w]/g, "");
 			if (!name) continue;
 			if (this.RESERVED_VARS.includes(name)) {
-				log("champ « " + name + " » ignoré : nom réservé");
+				log("Field \"" + name + "\" ignored: reserved name");
 				continue;
 			}
 			let type = (parts[2] || "text").toLowerCase();
-			if (!["text", "textarea", "check", "select", "ai"].includes(type)) type = "text";
+			if (!["text", "textarea", "check", "select", "multiselect", "ai"].includes(type)) type = "text";
 
 			let col4 = parts[3] || "", col5 = parts[4] || "";
 			let format = this._normFormat(col5);
 			let extra = col4;
 			if (!format) {
-				// Pas de 5e colonne : la 4e est-elle un format connu ?
+				// With no fifth column, check whether column four is a known format.
 				let asFormat = this._normFormat(col4);
-				// Un champ « ai » garde sa consigne en 4e colonne.
-				if (asFormat && type !== "ai" && !(type === "select" && col4.includes(","))) {
+				// AI fields retain their instructions in column four.
+				if (asFormat && type !== "ai" && type !== "multiselect" && !(type === "select" && col4.includes(","))) {
 					format = asFormat;
 					extra = "";
 				}
@@ -365,11 +408,13 @@ Annota = {
 
 			out.push({
 				name,
+				id: parts[5] || "",
+				id: parts[5] || "",
 				label: parts[1] || name,
 				type,
 				format: format || "plain",
-				// « select » : liste de choix. « ai » : consigne envoyée au modèle.
-				options: type === "select"
+				// Select uses choice options; AI uses instructions sent to the model.
+				options: ["select", "multiselect"].includes(type)
 					? extra.split(",").map(x => x.trim()).filter(Boolean) : [],
 				prompt: type === "ai" ? extra : ""
 			});
@@ -377,10 +422,10 @@ Annota = {
 		return out;
 	},
 
-	// Disposition par défaut quand une couleur a des champs mais aucun gabarit :
-	// une ligne par champ, dans l'ordre déclaré, le balisage de mise en forme
-	// étant intégré au gabarit lui-même. Ainsi {{nom}} reste la valeur brute et
-	// il n'y a jamais de double balisage si l'on écrit sa propre disposition.
+	// Default layout when fields exist without an explicit template:
+	// one line per field in declaration order, with formatting included
+	// in the template itself. {{name}} remains the raw value, avoiding
+	// double formatting in a custom layout.
 	defaultLayoutFromFields(schema) {
 		return schema.map(f => {
 			let fn = this.FORMATS[f.format] || this.FORMATS.plain;
@@ -388,7 +433,7 @@ Annota = {
 		}).join("\n");
 	},
 
-	// Gabarit effectif d'une couleur : celui saisi, sinon celui déduit des champs.
+	// Use the entered template, or derive one from the fields.
 	effectiveTemplate(entry) {
 		let tpl = String((entry && entry.template) || "").trim();
 		if (tpl) return tpl;
@@ -396,9 +441,9 @@ Annota = {
 		return schema.length ? this.defaultLayoutFromFields(schema) : "";
 	},
 
-	// Nom que vous avez donné à cette couleur (« Objection », « Méthode »…).
-	// Le nom Zotero de la teinte reste utilisé partout ailleurs : il désigne la
-	// pastille à cliquer, alors que le libellé désigne ce qu'on est en train de
+	// User-defined semantic name for the color, such as Method.
+	// Elsewhere the native shade name still identifies the color swatch;
+	// the semantic label identifies the research configuration being edited.
 	// faire.
 	labelForColor(color) {
 		let entry = this.getColorEntry(color);
@@ -407,12 +452,331 @@ Annota = {
 
 	fieldsForColor(color) {
 		let entry = this.getColorEntry(color);
-		return entry ? this.parseFieldSchema(entry.fields) : [];
+		const fields = entry ? this.parseFieldSchema(entry.fields).map(f => ({ ...f,
+			id: f.id || "c_" + this.fieldFingerprint(color + "/" + f.name), scope: "color" })) : [];
+		if (Zotero.Prefs.set) {
+			const aliases = JSON.parse(String(getPref("fieldAliases", "{}") || "{}")); let changed = false;
+			for (const field of fields) {
+				if (!(aliases[field.id] || []).includes(field.name)) { aliases[field.id] = [...(aliases[field.id] || []), field.name]; changed = true; }
+			}
+			if (changed) Zotero.Prefs.set("researchannotator.fieldAliases", JSON.stringify(aliases));
+		}
+		return fields;
 	},
 
-	// Faut-il une réponse d'IA pour LE COMMENTAIRE ENTIER ?
-	// Aucun gabarit ni champ → oui (la réponse EST le commentaire).
-	// Gabarit contenant {{ai}} → oui. Sinon → non : les champs suffisent.
+	fieldFingerprint(text) {
+		let hash = 2166136261;
+		for (const c of String(text)) hash = Math.imul(hash ^ c.charCodeAt(0), 16777619);
+		return (hash >>> 0).toString(16);
+	},
+	newFieldID(prefix = "g") {
+		const uuid = typeof Services !== "undefined" && Services.uuid
+			? Services.uuid.generateUUID().toString() : Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
+		return prefix + "_" + uuid.replace(/[^a-zA-Z0-9_]/g, "");
+	},
+	globalFieldConfig() {
+		const raw = String(getPref("globalFields", "") || "");
+		if (!raw) return { version: 1, fields: [] };
+		const config = JSON.parse(raw);
+		if (!Array.isArray(config.fields)) throw new Error("Invalid global field definitions; original settings retained.");
+		return config;
+	},
+	getGlobalFields() {
+		return this.globalFieldConfig().fields.map(f => ({ ...f, name: f.id, id: f.id,
+			label: f.label || f.displayName || f.id, scope: "global", format: f.format || "plain", options: f.options || [], prompt: f.prompt || "" }));
+	},
+	saveGlobalFields(fields) {
+		const config = this.globalFieldConfig(), seen = new Set();
+		for (const field of fields) {
+			if (!["text", "textarea", "check", "select", "multiselect", "ai"].includes(field.type)) throw new Error("Unsupported global field type.");
+			if (!/^g_[\w]+$/.test(field.id) || seen.has(field.id)) throw new Error("Invalid or duplicate global field ID.");
+			seen.add(field.id);
+			const raw = [field.id, String(field.label || "").replace(/\|/g, " "), field.type,
+				field.type === "ai" ? String(field.prompt || "").replace(/[|\n]/g, " ") : (field.options || []).join(",")].join(" | ");
+			const errors = this.validateFieldSchema(raw).filter(e => e.level === "error");
+			if (!String(field.label || "").trim() || errors.length) throw new Error(errors[0]?.message || "A field name is required.");
+		}
+		fields = fields.map(field => {
+			const old = config.fields.find(f => f.id === field.id);
+			return { ...field, historicalLabels: [...new Set([...(old?.historicalLabels || []), ...(field.historicalLabels || []), ...(old?.label ? [old.label] : [])])] };
+		});
+		const archived = [...(config.archivedFields || [])];
+		for (const old of config.fields.filter(f => !fields.some(field => field.id === f.id))) {
+			if (!archived.some(f => f.id === old.id)) archived.push(old);
+		}
+		Zotero.Prefs.set("researchannotator.globalFields", JSON.stringify({ ...config, version: 1, fields, archivedFields: archived }));
+		if (typeof AnnotaCardFields !== "undefined" && AnnotaCardFields) AnnotaCardFields.refreshViews();
+	},
+	annotationFields(color) { return [...this.getGlobalFields(), ...this.fieldsForColor(color)]; },
+	fieldByName(item, name) {
+		const fields = this.annotationFields(this.keyForItem(item));
+		const aliases = JSON.parse(String(getPref("fieldAliases", "{}") || "{}"));
+		return fields.find(f => f.name === name) || fields.find(f => (aliases[f.id] || []).includes(name))
+			|| this.globalFieldConfig().archivedFields?.filter(f => f.id === name).map(f => ({ ...f, name: f.id, scope: "global" }))[0];
+	},
+	categoryCatalog() {
+		const catalog = JSON.parse(String(getPref("fieldCategories", "{}") || "{}"));
+		if (!catalog || typeof catalog !== "object" || Array.isArray(catalog)) throw new Error("Invalid category catalog; original values retained.");
+		return catalog;
+	},
+	categoryIDs(field, values) {
+		const catalog = this.categoryCatalog(), entries = catalog[field.id] || {};
+		const before = JSON.stringify(catalog);
+		const ids = [];
+		for (const value of Array.isArray(values) ? values : values ? [values] : []) {
+			const label = String(value).trim();
+			if (!label) continue;
+			let id = Object.hasOwn(entries, label) ? label : Object.keys(entries)
+				.find(key => entries[key].normalize("NFKC").toLocaleLowerCase() === label.normalize("NFKC").toLocaleLowerCase());
+			if (!id) { id = this.newFieldID("v"); entries[id] = label; }
+			if (!ids.includes(id)) ids.push(id);
+		}
+		catalog[field.id] = entries;
+		const after = JSON.stringify(catalog);
+		if (after !== before) Zotero.Prefs.set("researchannotator.fieldCategories", after);
+		return ids;
+	},
+	categoryLabels(field, values) {
+		const catalog = this.categoryCatalog()[field.id] || {};
+		return (Array.isArray(values) ? values : values ? [values] : []).map(id => catalog[id] || String(id));
+	},
+	suggestionDismissals() {
+		const value = JSON.parse(String(getPref("suggestionDismissals", "{}") || "{}"));
+		if (!value || typeof value !== "object" || Array.isArray(value)
+			|| Object.values(value).some(ids => !Array.isArray(ids) || ids.some(id => typeof id !== "string"))) throw Error("Invalid suggestion preferences; original categories retained.");
+		return value;
+	},
+	categorySuggestionID(field, label) {
+		const fold = value => String(value).trim().normalize("NFKC").toLocaleLowerCase();
+		const entries = this.categoryCatalog()[field.id] || {};
+		return Object.keys(entries).find(id => fold(entries[id]) === fold(label));
+	},
+	isSuggestionDismissed(field, label) {
+		const id = this.categorySuggestionID(field, label);
+		return !!id && (this.suggestionDismissals()[field.id] || []).includes(id);
+	},
+	setSuggestionDismissed(field, label, dismissed) {
+		if (typeof AnnotaCardFields !== "undefined" && AnnotaCardFields?._maintenance) throw Error("Finish importing before changing suggestions.");
+		const id = this.categorySuggestionID(field, label) || (dismissed ? this.categoryIDs(field, [label])[0] : null);
+		if (!id) return;
+		const state = this.suggestionDismissals(), ids = state[field.id] || [];
+		const next = dismissed ? [...new Set([...ids, id])] : ids.filter(value => value !== id);
+		if (JSON.stringify(next) === JSON.stringify(ids)) return;
+		state[field.id] = next;
+		Zotero.Prefs.set("researchannotator.suggestionDismissals", JSON.stringify(state));
+	},
+	categorySuggestions(field, query = "") {
+		const fold = value => String(value).trim().normalize("NFKC").toLocaleLowerCase();
+		const entries = this.categoryCatalog()[field.id] || {}, seen = new Set();
+		return [...Object.values(entries), ...(field.options || [])].filter(label => {
+			const key = fold(label); if (!key || seen.has(key)) return false;
+			seen.add(key); return key.includes(fold(query)) && !this.isSuggestionDismissed(field, label);
+		});
+	},
+	createMultiSelect(doc, field, values, onChange) {
+		const control = doc.createElement("div"); control.className = "annota-multiselect";
+		const chips = doc.createElement("div"), search = doc.createElement("input"), choices = doc.createElement("div");
+		chips.className = "annota-field-chips"; choices.className = "annota-field-suggestions";
+		search.type = "text"; search.placeholder = "Search or add a value...";
+		search.setAttribute("aria-label", field.label); search.setAttribute("role", "combobox");
+		search.setAttribute("aria-autocomplete", "list"); search.setAttribute("aria-haspopup", "grid");
+		search.setAttribute("autocomplete", "off");
+		choices.id = this.newFieldID("choices"); choices.setAttribute("role", "grid");
+		choices.setAttribute("aria-label", field.label + " suggestions");
+		search.setAttribute("aria-controls", choices.id);
+		const fold = value => String(value).trim().normalize("NFKC").toLocaleLowerCase();
+		let selected = Array.isArray(values) ? values.slice() : values ? [values] : [];
+		let opened = false, active = -1, actions = [], observer;
+		const win = doc.defaultView;
+		const close = () => {
+			opened = false; active = -1; choices.hidden = true;
+			search.setAttribute("aria-expanded", "false"); search.removeAttribute?.("aria-activedescendant");
+			observer?.disconnect(); observer = null;
+			if (choices.hidePopover && choices.matches?.(":popover-open")) choices.hidePopover();
+			win?.removeEventListener?.("resize", close); win?.removeEventListener?.("scroll", onScroll, true);
+			if (choices.parentNode !== control) control.appendChild(choices);
+		};
+		const onScroll = event => { if (!choices.contains(event.target)) close(); };
+		const position = () => {
+			// Use the top layer when available, keeping DOM ownership inside the popup.
+			// Older readers use a body-level fixed list to escape overflow clipping.
+			if (!doc.body || !search.getBoundingClientRect) return;
+			const rect = search.getBoundingClientRect(), width = Math.max(1, Math.min(rect.width, win.innerWidth - 16));
+			const below = win.innerHeight - rect.bottom - 8, above = rect.top - 8;
+			const upward = below < 120 && above > below, height = Math.max(40, Math.min(200, upward ? above : below));
+			if (choices.showPopover) {
+				choices.setAttribute("popover", "manual");
+				if (!choices.matches(":popover-open")) choices.showPopover();
+			}
+			else doc.body.appendChild(choices);
+			choices.style.cssText = "position:fixed;margin:0;inset:auto;z-index:2147483647;box-sizing:border-box;width:" + width +
+				"px;left:" + Math.max(8, Math.min(rect.left, win.innerWidth - width - 8)) + "px;max-height:" + height +
+				"px;" + (upward ? "bottom:" + (win.innerHeight - rect.top) : "top:" + rect.bottom) + "px;";
+			const scheme = win.getComputedStyle?.(search).colorScheme;
+			choices.style.colorScheme = scheme && scheme !== "normal" ? scheme :
+				(win.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+			win.addEventListener("resize", close); win.addEventListener("scroll", onScroll, true);
+			if (!observer && win.MutationObserver) {
+				observer = new win.MutationObserver(() => { if (!control.isConnected) close(); });
+				observer.observe(doc.body, { childList: true, subtree: true });
+			}
+		};
+		control.readValues = () => selected.slice();
+		control.setValues = next => { selected = Array.isArray(next) ? next.slice() : next ? [next] : []; render(); };
+		control.addValue = label => {
+			if (control.disabled || !String(label).trim()) return;
+			this.setSuggestionDismissed(field, label, false);
+			selected = this.categoryIDs(field, [...selected, label]); search.value = ""; close(); render(); onChange();
+		};
+		control.removeValue = id => { if (control.disabled) return; selected = selected.filter(value => value !== id); render(); onChange(); };
+		control.setDisabled = disabled => { control.disabled = disabled; if (disabled) close(); render(); };
+		const markActive = () => {
+			actions.forEach((action, index) => action.node.setAttribute("aria-selected", String(index === active)));
+			if (actions[active]) {
+				search.setAttribute("aria-activedescendant", actions[active].node.id);
+				actions[active].node.scrollIntoView?.({ block: "nearest" });
+			}
+			else search.removeAttribute?.("aria-activedescendant");
+		};
+		const render = () => {
+			chips.replaceChildren(); choices.replaceChildren(); actions = []; active = -1;
+			search.disabled = !!control.disabled;
+			const labels = this.categoryLabels(field, selected), selectedLabels = new Set(labels.map(fold));
+			selected.forEach((id, index) => {
+				const chip = doc.createElement("button"); chip.type = "button"; chip.className = "annota-field-chip";
+				chip.textContent = labels[index] + " \u00d7"; chip.setAttribute("aria-label", "Remove " + labels[index]);
+				chip.disabled = !!control.disabled;
+				chip.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); control.removeValue(id); }); chips.appendChild(chip);
+			});
+			if (!opened || control.disabled) { close(); return; }
+			const option = (label, create = false) => {
+				const node = doc.createElement("div"), cell = doc.createElement("div"), choose = doc.createElement("button");
+				choose.type = "button"; choose.tabIndex = -1; cell.setAttribute("role", "gridcell");
+				node.className = create ? "annota-field-create" : "annota-field-option";
+				choose.textContent = create ? (this.isSuggestionDismissed(field, label) ? "Restore \u201c" : "Create \u201c") + label + "\u201d" : label;
+				node.id = choices.id + "_" + actions.length; node.setAttribute("role", "row"); node.tabIndex = -1;
+				node.addEventListener("mousedown", e => e.preventDefault());
+				choose.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); control.addValue(label); search.focus?.(); });
+				cell.appendChild(choose); node.appendChild(cell);
+				if (!create) {
+					const dismissCell = doc.createElement("div"), dismiss = doc.createElement("button");
+					dismissCell.setAttribute("role", "gridcell"); dismiss.type = "button"; dismiss.className = "annota-dismiss-suggestion";
+					dismiss.setAttribute("aria-label", "Dismiss suggestion " + label); dismiss.title = "Hide this suggestion; historical assignments stay saved";
+					dismiss.addEventListener("click", e => {
+						e.preventDefault(); e.stopPropagation(); if (control.disabled) return;
+						this.setSuggestionDismissed(field, label, true); render(); search.focus?.();
+					});
+					dismissCell.appendChild(dismiss); node.appendChild(dismissCell);
+				}
+				actions.push({ node, label }); choices.appendChild(node);
+			};
+			for (const label of this.categorySuggestions(field, search.value).filter(label => !selectedLabels.has(fold(label)))) option(label);
+			const query = search.value.trim();
+			if (query && !selectedLabels.has(fold(query)) && !this.categorySuggestions(field).some(label => fold(label) === fold(query))) option(query, true);
+			if (!actions.length) {
+				const empty = doc.createElement("div"); empty.className = "annota-field-empty";
+				empty.textContent = query ? "No unselected matches" : "Type to create a value"; choices.appendChild(empty);
+			}
+			choices.hidden = false; search.setAttribute("aria-expanded", "true"); position(); markActive();
+		};
+		search.addEventListener("focus", () => { opened = true; render(); });
+		search.addEventListener("input", () => { opened = true; render(); });
+		search.addEventListener("blur", e => { if (!choices.contains(e.relatedTarget)) close(); });
+		search.addEventListener("keydown", e => {
+			if (e.isComposing || !["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(e.key)) return;
+			e.preventDefault(); e.stopPropagation();
+			if (e.key === "Escape") { close(); return; }
+			if (!opened) { opened = true; render(); }
+			if (e.key === "Enter") {
+				if (active >= 0 && actions[active]) control.addValue(actions[active].label);
+				else if (search.value.trim()) control.addValue(this.categorySuggestions(field).find(label => fold(label) === fold(search.value)) || search.value);
+				return;
+			}
+			if (actions.length) { active = (active + (e.key === "ArrowDown" ? 1 : active < 0 ? 0 : -1) + actions.length) % actions.length; markActive(); }
+		});
+		control.appendChild(chips); control.appendChild(search); control.appendChild(choices); render();
+		return control;
+	},
+	readManualField(field, control) {
+		return field.type === "multiselect" ? control.readValues() : field.type === "check"
+			? (control.checked ? "true" : "") : String(control.value || "").trim();
+	},
+	fieldDisplayValue(field, value) {
+		return Array.isArray(value) ? this.categoryLabels(field, value).join(", ") : String(value ?? "");
+	},
+	async migrateLegacyGlobalFields() {
+		const config = this.globalFieldConfig();
+		if (!config.legacyDefinitions) {
+			const fields = [...config.fields];
+			for (const [key, label] of [["themes", "Research themes"], ["experiments", "Experiments"]]) {
+				if (!fields.some(f => f.legacyKey === key)) fields.push({ id: "g_legacy_" + key, label, type: "multiselect", options: [], legacyKey: key });
+			}
+			// Definitions are checkpointed before values. A failed run resumes safely.
+			Zotero.Prefs.set("researchannotator.globalFields", JSON.stringify({ ...config, fields, legacyDefinitions: true }));
+		}
+		await AnnotaCardFields.load();
+		if (!this._globalMigrationLibraries) this._globalMigrationLibraries = new Set();
+		for (const library of Zotero.Libraries.getAll()) {
+			if (library.editable === false) continue;
+			try {
+				const current = await this._getResearchMetadata(library.libraryID);
+				const legacyNote = await this._findResearchMetadataNote(library.libraryID);
+				const legacy = legacyNote ? await this._getResearchMetadataFromNote(library.libraryID) : { annotations: {} };
+				// Historical dedicated comments become an ordinary configurable global field.
+				// Keep original metadata and native Comment unchanged; never re-add removed definitions.
+				const latestConfig = this.globalFieldConfig();
+				if (!latestConfig.legacyCommentDefinition && [current, legacy].some(data =>
+					Object.values(data.annotations || {}).some(saved => String(saved.researchComment || "").trim()))) {
+					const fields = [...latestConfig.fields];
+					if (!fields.some(field => field.legacyKey === "researchComment")) fields.push({
+						id: "g_legacy_comment", label: "Historical research comment", type: "textarea", legacyKey: "researchComment"
+					});
+					Zotero.Prefs.set("researchannotator.globalFields", JSON.stringify({ ...latestConfig, fields, legacyCommentDefinition: true }));
+				}
+				const attachments = new Set(), checkpoint = this.globalFieldConfig().migrationLibraries?.[library.libraryID];
+				for (const field of this.getGlobalFields().filter(f => f.legacyKey && f.type === "multiselect")) {
+					this.categoryIDs(field, [...(current[field.legacyKey] || []), ...(legacy[field.legacyKey] || [])]);
+				}
+				for (const item of await this._getAllResearchAnnotations(library.libraryID)) {
+					if (!checkpoint && item.parentID) attachments.add(item.parentID);
+					const key = `${library.libraryID}:${item.key}`, patch = {}, saved = AnnotaCardFields.get(item)?.values || {};
+					for (const field of this.getGlobalFields().filter(f => f.legacyKey)) {
+						if (field.legacyKey === "researchComment") {
+							if (!Object.hasOwn(saved, field.name)) {
+								const comments = [...new Set([current.annotations[key]?.researchComment, legacy.annotations?.[key]?.researchComment]
+									.map(value => String(value || "").trim()).filter(Boolean))];
+								if (comments.length) patch[field.name] = comments.join("\n\n");
+							}
+							continue;
+						}
+						const prefix = field.legacyKey === "themes" ? "RA:ThemeCatalog:" : "RA:ExperimentCatalog:";
+						const catalogLabels = (item.getTags?.() || []).map(t => t.tag || "").filter(t => t.startsWith(prefix)).map(t => t.slice(prefix.length));
+						if (catalogLabels.length) this.categoryIDs(field, catalogLabels);
+						if (Object.hasOwn(saved, field.name)) continue;
+						const labels = [...new Set([...(current.annotations[key]?.[field.legacyKey] || []), ...(legacy.annotations?.[key]?.[field.legacyKey] || [])])];
+						if (labels.length) patch[field.name] = this.categoryIDs(field, labels);
+					}
+					if (Object.keys(patch).length) {
+						await AnnotaCardFields.saveValues(item, patch);
+						if (item.parentID) attachments.add(item.parentID);
+					}
+				}
+				this._globalMigrationLibraries.add(library.libraryID);
+				for (const parentID of attachments) {
+					await this._syncPaperResearchNote({ libraryID: library.libraryID, parentID, existingOnly: true });
+				}
+				const latest = this.globalFieldConfig();
+				Zotero.Prefs.set("researchannotator.globalFields", JSON.stringify({ ...latest,
+					migrationLibraries: { ...(latest.migrationLibraries || {}), [library.libraryID]: 1 } }));
+			}
+			catch (e) { this._globalMigrationLibraries.delete(library.libraryID); log("Global-field migration incomplete; legacy sources retained for retry: " + e); }
+		}
+		AnnotaCardFields.refreshViews();
+	},
+
+	// Does this legacy output configuration require one whole-response value?
+	// Without a template or fields, the response is the legacy output value.
+	// A template containing {{ai}} needs that response; otherwise fields suffice.
 	entryNeedsAI(entry) {
 		if (!entry) return false;
 		let tpl = this.effectiveTemplate(entry);
@@ -420,38 +784,38 @@ Annota = {
 		return /\{\{\s*ai\s*\}\}/.test(tpl);
 	},
 
-	// Un champ de type « ai » réclame le modèle même si le commentaire, lui,
-	// est monté à partir des champs saisis.
+	// An AI field needs the model even when the surrounding output
+	// is assembled from existing fields.
 	entryHasAIFields(entry) {
 		return this.parseFieldSchema(entry && entry.fields).some(f => f.type === "ai");
 	},
 
-	// Le prompt de la couleur sert-il à RENSEIGNER LES CHAMPS ?
-	// C'est le cas dès qu'une couleur a des champs et un prompt sans que la
-	// disposition réclame {{ai}} : la réponse du modèle n'est alors pas un
-	// commentaire libre, elle est contrainte aux champs déclarés.
+	// Does the historical color prompt populate structured fields?
+	// This applies when fields and a prompt exist without an {{ai}} layout.
+	// The model response is then constrained to declared fields rather
+	// than treated as free-form output. Native Comment is not the target.
 	entryFillsFields(entry) {
 		if (!entry || !String(entry.prompt || "").trim()) return false;
-		if (this.entryNeedsAI(entry)) return false;   // la réponse EST le commentaire
+		if (this.entryNeedsAI(entry)) return false;   // The response is the historical whole-output value.
 		return this.parseFieldSchema(entry.fields).some(f => f.type !== "ai");
 	},
 
-	// Champs que le modèle doit renseigner : ceux restés vides. Les champs
-	// « ai » ont leur propre consigne et sont traités à part.
+	// Only unfilled fields need model output; AI fields have separate
+	// instructions and are processed independently.
 	fieldsToFill(schema, values) {
 		return schema.filter(f => f.type !== "ai"
 			&& !String((values && values[f.name]) || "").trim());
 	},
 
-	// Le fournisseur est-il sollicité, à un titre ou à un autre ?
+	// Does this configuration use a provider for any purpose?
 	entryUsesProvider(entry) {
 		return this.entryNeedsAI(entry) || this.entryHasAIFields(entry)
 			|| this.entryFillsFields(entry);
 	},
 
-	// Sera-t-il sollicité POUR CETTE annotation ? entryUsesProvider décrit la
-	// couleur en général ; ici on tient compte de ce qui a déjà été saisi, car
-	// un formulaire entièrement rempli ne laisse rien à demander au modèle.
+	// Will this annotation need a request? entryUsesProvider describes
+	// the configuration generally; here existing values matter because
+	// a fully completed form leaves nothing for the model to generate.
 	willCallProvider(entry, values) {
 		if (!entry) return false;
 		if (this.entryNeedsAI(entry)) return true;
@@ -462,34 +826,34 @@ Annota = {
 			&& this.fieldsToFill(schema, values).length > 0;
 	},
 
-	// Prompt configuré pour cette couleur, ou "" si la couleur n'en a pas.
+	// Configured color prompt, or an empty string.
 	getPromptForColor(color) {
 		let entry = this.getColorEntry(color);
 		return entry ? entry.prompt : "";
 	},
 
-	// Fournisseur actif : "openai" (Mistral ou tout endpoint compatible),
+	// Active provider: openai for Mistral or another compatible endpoint.
 	// "ollama" (local), "cli" (Claude Code local), "apple" (Apple Intelligence).
-	// Fournisseurs reconnus. Un appel peut en imposer un (la discussion a son
-	// propre réglage), sinon c'est celui des annotations qui s'applique.
+	// Known providers; an individual request can override the configured choice.
+	// Use the Chat-specific setting if present, otherwise the annotation setting.
 	PROVIDERS: ["openai", "ollama", "cli", "apple"],
 
 	provider(override) {
 		if (override && this.PROVIDERS.includes(override)) return override;
 		let p = String(getPref("provider", "")).trim();
 		if (p === "openai" || p === "ollama" || p === "cli" || p === "apple") return p;
-		// Rétrocompat avec l'ancienne case à cocher.
+		// Compatibility with the historical checkbox preference.
 		return getPref("useClaudeCLI", false) ? "cli" : "openai";
 	},
 
-	// Réglages du chemin compatible OpenAI (Mistral distant ou Ollama local).
+	// OpenAI-compatible connection settings, including remote Mistral or local Ollama.
 	chatConfig(override) {
 		if (this.provider(override) === "ollama") {
 			return {
 				endpoint: String(getPref("ollamaEndpoint",
 					"http://localhost:11434/v1/chat/completions")).trim(),
 				model: String(getPref("ollamaModel", "llama3.1")).trim() || "llama3.1",
-				apiKey: "",          // Ollama n'exige aucune clé
+				apiKey: "",          // Ollama does not require an API key.
 				requiresKey: false
 			};
 		}
@@ -503,11 +867,11 @@ Annota = {
 		};
 	},
 
-	// Vérifie que le fournisseur choisi est prêt ; renvoie un message ou null.
+	// Validate provider readiness; return a message or null.
 	providerReadyError(override) {
 		let p = this.provider(override);
 		if (p === "apple") {
-			// Disponibilité réellement vérifiée au premier appel (compilation).
+			// Actual availability is checked on the first call, including compilation.
 			return null;
 		}
 		if (p === "cli") {
@@ -524,8 +888,8 @@ Annota = {
 		return null;
 	},
 
-	// ---- Langue de l'interface ----
-	// uiLanguage : "auto" (langue de Zotero), "en" ou "fr".
+	// ---- Interface language ----
+	// uiLanguage: "auto" (Zotero language), "en" or "fr".
 	lang() {
 		let p = String(getPref("uiLanguage", "auto") || "auto");
 		if (p === "en" || p === "fr") return p;
@@ -538,8 +902,8 @@ Annota = {
 		return (typeof AnnotaI18n !== "undefined" && AnnotaI18n) || null;
 	},
 
-	// Texte traduit ; {nom} est remplacé par vars.nom. Repli : anglais, puis
-	// la clé elle-même (visible, donc repérable).
+	// Translate text and substitute named variables; fall back to English,
+	// then to the visible key so a missing translation can be diagnosed.
 	t(key, vars) {
 		let d = this.i18n || {};
 		let s = d[this.lang()] && d[this.lang()][key];
@@ -550,7 +914,7 @@ Annota = {
 			Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m);
 	},
 
-	// Langue changée : menus et panneau de discussion sont reconstruits.
+	// Rebuild menus and Chat presentation when the language changes.
 	relocalize() {
 		for (let win of Zotero.getMainWindows()) {
 			try {
@@ -566,6 +930,7 @@ Annota = {
 		this.id = id;
 		this.version = version;
 		this.rootURI = rootURI;
+        this._managedEngineRequired=true;
 	},
 
 	registerNotifier() {
@@ -595,7 +960,7 @@ Annota = {
 
         if (type !== "item") return;
 
-        if (!["add", "modify", "delete"].includes(event)) return;
+        if (!["add", "modify", "delete", "trash"].includes(event)) return;
 
         const notifiedAt = Date.now();
 
@@ -621,10 +986,11 @@ async _handlePaperNoteNotification(event, id, extraData, notifiedAt) {
     if (event === "delete") {
         const deleted = extraData?.[id];
         const old = deleted?.old || deleted;
+        const cached = this._annotationParents?.get(id);
 
-        const key = String(old?.key || deleted?.key || "");
+        const key = String(old?.key || deleted?.key || cached?.key || "");
         const libraryID = Number(
-            old?.libraryID ?? deleted?.libraryID
+            old?.libraryID ?? deleted?.libraryID ?? cached?.libraryID
         );
 
         if (!key || !Number.isInteger(libraryID)) {
@@ -635,21 +1001,19 @@ async _handlePaperNoteNotification(event, id, extraData, notifiedAt) {
             return;
         }
 
+        if(typeof AnnotaInfrastructure!=='undefined'){
+            const config=Object.values(AnnotaInfrastructure.state?.notes||{}).find(c=>(c.noteKey===key||c.orphanedNoteKey===key)&&AnnotaData.resolveLibrary(c.library)?.libraryID===libraryID);
+            if(config){await AnnotaInfrastructure.notes.configure({...config,nativeDeletedKey:key});await AnnotaInfrastructure.notes.recoverOrphan({...config,nativeDeletedKey:key});return;}
+        }
         const annotationKey = `${libraryID}:${key}`;
 
-        await this._removePaperResearchNoteEntry(
-            libraryID,
-            annotationKey
-        );
-
-        await this._updateResearchMetadata(libraryID, metadata => {
-            if (!metadata.annotations[annotationKey]) {
-                return false;
-            }
-
-            delete metadata.annotations[annotationKey];
-            return true;
-        });
+        if (!this._deletedAnnotationKeys) this._deletedAnnotationKeys = new Set();
+        this._deletedAnnotationKeys.add(annotationKey);
+        let parentID = old?.parentID || old?.parentItemID || cached?.parentID;
+        if (!parentID) parentID = await this._attachmentForDeletedAnnotation(libraryID, key);
+        if (parentID) {
+            await this._syncPaperResearchNote({ libraryID, parentID, existingOnly: true });
+        }
 
         log("Deleted annotation removed from paper note: " + annotationKey);
         return;
@@ -659,7 +1023,11 @@ async _handlePaperNoteNotification(event, id, extraData, notifiedAt) {
 
     if (!item) return;
 
+    if(item.isNote?.()&&item.deleted&&typeof AnnotaInfrastructure!=='undefined'){const config=Object.values(AnnotaInfrastructure.state?.notes||{}).find(c=>c.noteKey===item.key&&AnnotaData.resolveLibrary(c.library)?.libraryID===item.libraryID);if(config)await AnnotaInfrastructure.notes.recoverOrphan(config);return;}
     if (!item.isAnnotation?.()) return;
+    if (item.deleted) return;
+    if (!this._annotationParents) this._annotationParents = new Map();
+    this._annotationParents.set(id, { parentID: item.parentID, libraryID: item.libraryID, key: item.key });
 
     // Ignore the annotation modification caused by a note edit.
     const annotationKey = `${item.libraryID}:${item.key}`;
@@ -675,6 +1043,19 @@ async _handlePaperNoteNotification(event, id, extraData, notifiedAt) {
         this._schedulePaperResearchNoteSync(item);
         return;
     }
+    if (typeof AnnotaInfrastructure !== "undefined" && extraData?.[id]?.skipRenameFile === true) {
+        // Installed syncLocal._saveObjectFromJSON supplies this notifier flag.
+        // Treat downloaded/imported items as existing data, never new paid AI work.
+        await this._syncPaperResearchNote({ libraryID: item.libraryID, parentID: item.parentID, existingOnly: true });
+        return;
+    }
+
+    // Only add notifications initiate automatic generation. Repeated adds,
+    // render callbacks and reopening a reader must not initiate another request.
+    if (!this._newAnnotationEvents) this._newAnnotationEvents = new Set();
+    if (this._newAnnotationEvents.has(annotationKey)) return;
+    this._newAnnotationEvents.add(annotationKey);
+    this._deletedAnnotationKeys?.delete(annotationKey);
 
     // New annotation.
     const isConversion = await this.handleConvertedAnnotation(id);
@@ -862,7 +1243,7 @@ async _syncPaperResearchNoteFromNote(note) {
             annotationText,
             annotationType,
             annotationColor,
-            comment: getField("Research comment"),
+            comment: getField("Comment") || getField("Research comment"),
             themes: splitList(getField("Themes")),
             experiments: splitList(getField("Experiments"))
         });
@@ -1017,7 +1398,14 @@ async _findResearchMetadataNote(libraryID) {
 
     return null;
 },
-async _getOrCreatePaperResearchNote(annotation) {
+async _associatePDFResearchNote(note,paper){
+    const parentID=paper?.id||false;
+    if(paper&&paper.libraryID!==note.libraryID)throw Error("PDF note and publication belong to different libraries");
+    if(note.parentID===parentID||(!paper&&note.parentID===undefined))return note;
+    if(typeof AnnotaInfrastructure!=='undefined')await AnnotaInfrastructure.backup('',{kind:'pdf-note-placement',noteKey:note.key,noteHTML:note.getNote(),parentID:note.parentID||false,collections:note.getCollections?.()||[]},'pdf-note-placement');
+    note.parentID=parentID;if(parentID)note.setCollections?.([]);await note.saveTx();return note;
+},
+async _getOrCreatePaperResearchNote(annotation, createMissing = true) {
     if (!annotation?.parentID) {
         throw new Error("Annotation has no parent attachment.");
     }
@@ -1054,6 +1442,11 @@ async _getOrCreatePaperResearchNote(annotation) {
     const marker =
         "research-annotator-pdf-note-v1:" + attachmentKey;
 
+    if (typeof AnnotaInfrastructure !== "undefined") {
+        const existing = await AnnotaInfrastructure.notes.find(libraryID, marker);
+        if (existing) return { note: await this._associatePDFResearchNote(existing,paper), paper, marker };
+    }
+
     // Search existing Zotero notes for this paper's research note.
     const search = new Zotero.Search();
     search.libraryID = libraryID;
@@ -1064,18 +1457,20 @@ async _getOrCreatePaperResearchNote(annotation) {
     for (const id of ids) {
         const existing = Zotero.Items.get(id);
 
-        if (!existing || !existing.isNote?.()) continue;
+        if (!existing || !existing.isNote?.() || existing.deleted) continue;
 
         const content = existing.getNote() || "";
 
         if (content.includes(marker)) {
             return {
-                note: existing,
+                note: await this._associatePDFResearchNote(existing,paper),
                 paper,
                 marker
             };
         }
     }
+
+    if (!createMissing) return null;
 
     // Create one research note for this paper.
     const note = new Zotero.Item("note");
@@ -1085,10 +1480,7 @@ async _getOrCreatePaperResearchNote(annotation) {
         note.parentID = noteParent.id;
     }
 
-    const title =
-        noteIdentity.getField("filename")
-        || noteIdentity.getField("title")
-        || "Standalone PDF";
+    const title = AnnotaInfrastructure.notes.pdfConfig(attachment,libraryID).title || AnnotaNotePresentation.pdfTitle(attachment);
 
     const escapedTitle = title
         .replace(/&/g, "&amp;")
@@ -1096,11 +1488,13 @@ async _getOrCreatePaperResearchNote(annotation) {
         .replace(/>/g, "&gt;");
 
     note.setNote(`
-        <h1>Research Notes — ${escapedTitle}</h1>
+        <h1>${escapedTitle}</h1>
         <p style="margin:0;padding:0;font-size:1px;line-height:1px;color:#888;"><span>${marker}</span></p>
 
         <hr>
     `);
+
+    if(typeof AnnotaInfrastructure!=="undefined")note.setNote(AnnotaInfrastructure.notes.stamp(note.getNote(),AnnotaInfrastructure.notes.pdfConfig(attachment,libraryID)));
 
     await note.saveTx();
 
@@ -1202,7 +1596,93 @@ async _createResearchNote(libraryID, title) {
         title: title
     };
 },
+async _attachmentForDeletedAnnotation(libraryID, key) {
+    // Delete notifier payloads need not contain the old attachment ID. Existing
+    // managed notes retain both the attachment marker and annotation link.
+    const search = new Zotero.Search();
+    search.libraryID = libraryID;
+    search.addCondition("itemType", "is", "note");
+    for (const id of await search.search()) {
+        const note = await Zotero.Items.getAsync(id);
+        if (!note?.isNote?.()) continue;
+        const html = note.getNote() || "";
+        if (!html.includes(`annotation=${key}`) && !html.includes(`data-ra-entry="${libraryID}:${key}"`)
+                && !html.includes(`RA_ENTRY_START:${libraryID}:${key}`)) continue;
+        const marker = html.match(/research-annotator-pdf-note-v1:([A-Z0-9]+)/i);
+        if (!marker) continue;
+        const attachment = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, marker[1]);
+        if (attachment?.isAttachment?.() && !attachment.deleted) return attachment.id;
+    }
+    return null;
+},
+
+_replaceManagedResearchEntries(content, replacement) {
+    const ranges = [];
+    // Preserve all content outside recognized managed wrappers, including user
+    // text between entries or after the final entry.
+    for (const match of content.matchAll(/<div\b[^>]*data-ra-entry=["'][^"']+["'][^>]*>/gi)) {
+        const tags = /<\/?div\b[^>]*>/gi;
+        tags.lastIndex = match.index;
+        let depth = 0, tag;
+        while ((tag = tags.exec(content))) {
+            depth += /^<\/div/i.test(tag[0]) ? -1 : 1;
+            if (!depth) { ranges.push([match.index, tags.lastIndex]); break; }
+        }
+    }
+    const labels = new Set(["Page", "Comment", "Research comment", "Themes", "Experiments", "Tags", "Source"]);
+    for (const entry of Object.values(this.getColorPrompts())) {
+        for (const field of this.parseFieldSchema(entry?.fields)) {
+            labels.add(String(field.label || field.name).replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"));
+        }
+    }
+    for (const field of [...this.getGlobalFields(), ...(this.globalFieldConfig().archivedFields || [])]) {
+        for (const label of [field.label, ...(field.historicalLabels || [])]) {
+            labels.add(String(label).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;").replace(/'/g, "&#39;"));
+        }
+    }
+    // Zotero can strip wrapper attributes. Recognize normalized annotation
+    // headings and consume only the generated field paragraphs that follow.
+    for (const match of content.matchAll(/<h2\b[^>]*>[\s\S]*?<\/h2>/gi)) {
+        if (!/href=["']zotero:\/\/open-pdf\/[^"']*annotation=/i.test(match[0])) continue;
+        if (ranges.some(([start, end]) => match.index >= start && match.index < end)) continue;
+        let start = match.index, end = match.index + match[0].length;
+        const preceding = content.slice(0, start).match(/<p\b[^>]*>(?:(?!<\/p>)[\s\S])*<\/p>\s*$/i);
+        if (preceding && /<mark\b|background-color\s*:|<span style="color:#[0-9a-f]{6};">&#9632;<\/span> <strong>[^<]+<\/strong>/i.test(preceding[0])) start = preceding.index;
+        while (true) {
+            const p = content.slice(end).match(/^\s*<p\b[^>]*>\s*<(?:strong|b)>([\s\S]*?):<\/(?:strong|b)>[\s\S]*?<\/p>/i);
+            if (!p || !labels.has(p[1])) break;
+            end += p[0].length;
+        }
+        ranges.push([start, end]);
+    }
+    ranges.sort((a, b) => a[0] - b[0]);
+    // A native rule survives note normalization, but custom attributes may not.
+    // Associate one boundary-adjacent rule with each managed entry after the
+    // first. Rules in the introduction/footer and inter-entry prose survive.
+    for (let i = 1; i < ranges.length; i++) {
+        const previousEnd = ranges[i - 1][1];
+        const gap = content.slice(previousEnd, ranges[i][0]);
+        const separator = gap.match(/\s*(?:<div\b[^>]*>\s*<hr\b[^>]*>\s*<\/div>|<hr\b[^>]*>)\s*$/i);
+        if (separator) ranges[i][0] = previousEnd + separator.index;
+    }
+    const merged = [];
+    for (const range of ranges) {
+        const last = merged[merged.length - 1];
+        if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
+        else merged.push(range.slice());
+    }
+    if (!merged.length) return replacement ? content + "\n" + replacement : content;
+    let result = content.slice(0, merged[0][0]) + replacement;
+    for (let i = 0; i < merged.length; i++) {
+        result += content.slice(merged[i][1], merged[i + 1]?.[0] ?? content.length);
+    }
+    return result;
+},
+
 _schedulePaperResearchNoteSync(annotation) {
+    if(this._colorMappingPDFs?.has(annotation?.parentID))return;
     if (!annotation?.parentID || !annotation.id) return;
 
     const queueKey = `${annotation.libraryID}:${annotation.parentID}`;
@@ -1261,16 +1741,20 @@ async _syncPaperResearchNote(annotation) {
                 ? await Zotero.Items.getAsync(annotation.id)
                 : annotation;
 
-            if (!fresh || !fresh.isAnnotation?.()) return;
-
-            return this._syncPaperResearchNoteNow(fresh);
+            // An attachment rebuild remains valid after its last annotation is gone.
+            return this._syncPaperResearchNoteNow(fresh?.isAnnotation?.() && !fresh.deleted
+                && !this._deletedAnnotationKeys?.has(`${libraryID}:${fresh.key}`)
+                ? fresh : { libraryID, parentID, existingOnly: !annotation.manualSync, manualSync: annotation.manualSync, orderChange: annotation.orderChange });
         });
 
     this._paperNoteQueues.set(queueKey, current);
 
     try {
-        return await current;
+        const result=await current;
+        if(typeof AnnotaInfrastructure!=='undefined'){const source=await Zotero.Items.getAsync(parentID),library=AnnotaData.libraryIdentity(Zotero.Libraries.get(libraryID)),config=source&&AnnotaInfrastructure.notes.config(library,{type:"pdf",key:source.key});if(config)AnnotaInfrastructure.notes.errors.delete(config.id);}
+        return result;
     }
+    catch(error){if(typeof AnnotaInfrastructure!=='undefined'){try{const source=await Zotero.Items.getAsync(parentID),library=AnnotaData.libraryIdentity(Zotero.Libraries.get(libraryID)),config=source&&AnnotaInfrastructure.notes.config(library,{type:"pdf",key:source.key});if(config)AnnotaInfrastructure.notes.errors.set(config.id,String(error.message||error).slice(0,2000));}catch(_){}}throw error;}
     finally {
         if (this._paperNoteQueues.get(queueKey) === current) {
             this._paperNoteQueues.delete(queueKey);
@@ -1278,110 +1762,14 @@ async _syncPaperResearchNote(annotation) {
     }
 },
 
-async _syncPaperResearchNoteNow(annotation) {
-    if (!annotation || !annotation.isAnnotation?.()) return;
-
-    const attachmentID = annotation.parentID;
-    if (!attachmentID) return;
-
-    const { note } = await this._getOrCreatePaperResearchNote(annotation);
-    const libraryID = annotation.libraryID;
-
-    const attachment = await Zotero.Items.getAsync(attachmentID);
-
-    if (!attachment || !attachment.isAttachment?.()) {
-        throw new Error("Could not resolve PDF attachment for annotation links.");
-    }
-
-    const library = Zotero.Libraries.get(libraryID);
-
-    const libraryPath =
-        library?.libraryType === "group" && library.groupID
-            ? `groups/${library.groupID}`
-            : "library";
-
-    const pdfLinkBase =
-        `zotero://open-pdf/${libraryPath}/items/${attachment.key}`;
-
-    const escapeHTML = value =>
-        String(value ?? "")
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#39;");
-
-    // Load every annotation belonging to this PDF.
-    const search = new Zotero.Search();
-    search.libraryID = libraryID;
-    search.addCondition("resultLevel", "annotation");
-
-    const ids = await search.search();
-    const annotations = [];
-
-    for (const id of ids) {
-        const item = await Zotero.Items.getAsync(id);
-
-        if (
-            item?.isAnnotation?.() &&
-            item.parentID === attachmentID
-        ) {
-            annotations.push(item);
-        }
-    }
-
-    // A newly converted annotation may not yet appear in Zotero's search results.
-    // Ensure the annotation that triggered this rebuild is included.
-    if (
-        annotation.parentID === attachmentID &&
-        !annotations.some(item => item.id === annotation.id)
-    ) {
-        const currentAnnotation = await Zotero.Items.getAsync(annotation.id);
-
-        if (
-            currentAnnotation?.isAnnotation?.() &&
-            currentAnnotation.parentID === attachmentID
-        ) {
-            annotations.push(currentAnnotation);
-            log(
-                "Added triggering annotation missing from search results: "
-                + currentAnnotation.key
-            );
-        }
-    }
-
-    // Read research metadata once for the complete rebuild.
-    const metadata = await this._getResearchMetadata(libraryID);
-    const colorLabels = this.getColorLabels();
-
-    const entries = [];
-
-    for (const item of annotations) {
+_renderManagedAnnotationEntry(item, { libraryID, metadata, colorLabels, pdfLinkBase, escapeHTML, managedConfig }) {
         const annotationKey = `${libraryID}:${item.key}`;
         const saved = metadata.annotations[annotationKey] || {};
 
         let comment = item.annotationComment || "";
 
-        // Migrate comments stored by the previous version.
-        if (saved.researchComment) {
-            if (!comment) {
-                item.annotationComment = saved.researchComment;
-                await item.saveTx();
-                comment = item.annotationComment || "";
-            }
-
-            await this._updateResearchMetadata(libraryID, current => {
-                const currentSaved =
-                    current.annotations[annotationKey];
-
-                if (!currentSaved?.researchComment) return false;
-
-                delete currentSaved.researchComment;
-                return true;
-            });
-        }
-
-        const text = item.annotationText || "";
+        const text = managedConfig?.include.text === false ? "" : item.annotationText || "";
+        if (managedConfig?.include.comment === false) comment = "";
         const type = String(item.annotationType || "").toLowerCase();
         const color = String(item.annotationColor || "").toLowerCase();
 
@@ -1392,17 +1780,8 @@ async _syncPaperResearchNoteNow(annotation) {
         const colorLabel = String(labelEntry?.[1] || "").trim();
         const safeColor = /^#[0-9a-f]{6}$/i.test(color) ? color : "";
 
-        const escapedText = escapeHTML(text || "Image annotation");
+        const escapedText = escapeHTML(managedConfig?.include.text === false ? "Source annotation" : text || "Image annotation");
         let formattedText = escapedText;
-
-        if (safeColor && type === "highlight") {
-            formattedText =
-                `<mark style="background-color:${safeColor};color:CanvasText;text-decoration:none;border-bottom:0;">${escapedText}</mark>`;
-        }
-        else if (safeColor && type === "underline") {
-            formattedText =
-                `<span style="text-decoration:none;border-bottom:2px solid ${safeColor};padding-bottom:1px;">${escapedText}</span>`;
-        }
 
         let pageIndex = Number.MAX_SAFE_INTEGER;
         let page = "";
@@ -1447,7 +1826,7 @@ async _syncPaperResearchNoteNow(annotation) {
 
         const annotationLink = page
             ? `${pdfLinkBase}?page=${pageIndex + 1}&amp;annotation=${item.key}`
-            : "";
+            : `${pdfLinkBase}?annotation=${item.key}`;
 
         const tags = (item.getTags?.() || [])
             .map(tag => typeof tag === "string" ? tag : tag.tag)
@@ -1459,48 +1838,208 @@ async _syncPaperResearchNoteNow(annotation) {
                 !tag.startsWith("RA:ExperimentCatalog:")
             );
 
-        const themes = Array.isArray(saved.themes) ? saved.themes : [];
-        const experiments = Array.isArray(saved.experiments)
+        const themes = !this._globalMigrationLibraries?.has(libraryID) && Array.isArray(saved.themes) ? saved.themes : [];
+        const experiments = !this._globalMigrationLibraries?.has(libraryID) && Array.isArray(saved.experiments)
             ? saved.experiments
             : [];
 
-        const labelHighlightStyle = safeColor
-            ? ` style="background-color:${safeColor};color:CanvasText;padding:2px 5px;"`
-            : "";
+        // Retrieve the separately stored values for this exact annotation.
+        const structuredRecord =
+            typeof AnnotaCardFields !== "undefined" && AnnotaCardFields
+                ? AnnotaCardFields.get(item)
+                : null;
 
+        const structuredValues = structuredRecord?.values || {};
+
+        const structuredFields = this.annotationFields(
+            this.keyForItem(item)
+        )
+            .filter(field => !managedConfig || (field.scope === "global" ? managedConfig.include.global !== false : managedConfig.include.colorFields !== false))
+            .filter(field => !managedConfig || (managedConfig.include["field:" + field.id] !== false &&
+                managedConfig.include[(field.scope === "global" ? "global" : "color") + (field.type === "ai" ? "AI" : "Manual")] !== false))
+            .filter(field => !managedConfig?.include.omitEmpty ||
+                (structuredValues[field.name] !== undefined && (field.type === "check" || this.fieldDisplayValue(field, structuredValues[field.name]).trim())))
+            .map(field => ({
+                name: field.name,
+                label: field.label || field.name,
+                type: field.type,
+                value: this.fieldDisplayValue(field, structuredValues[field.name]).trim()
+            }));
+
+        const structuredFieldsHTML = structuredFields
+            .map(field => {
+                const label = escapeHTML(field.label);
+                const value = field.value;
+
+                if (field.type === "ai") {
+                    return `<p><strong>${label}:</strong> ${value ? this.aiFieldHTML(field, value) : "Not generated yet"}</p>`;
+                }
+                if (field.type === "check") {
+                    return `<p><strong>${label}:</strong> ${value ? "☑ Checked" : "☐ Not checked"}</p>`;
+                }
+                if (field.type === "select") {
+                    return `<p><strong>${label}:</strong> ${value ? escapeHTML(value) : "Not selected"}</p>`;
+                }
+                return value
+                    ? `<p><strong>${label}:</strong> ${escapeHTML(value)}</p>`
+                    : "";
+            })
+            .filter(Boolean)
+            .join("");
+
+        const indicator = safeColor && managedConfig?.include.color !== false ? '<span style="color:'+safeColor+';">&#9632;</span> ' : '';
         const entryHTML = `
             <div data-ra-entry="${escapeHTML(annotationKey)}">
-                <p><strong><mark${labelHighlightStyle}>${escapeHTML(colorLabel || (type === "highlight" ? "Highlight" : type === "underline" ? "Underline" : "Annotation"))}</mark></strong></p>
-                <h2>${annotationLink
-                    ? `<a href="${annotationLink}" style="color:CanvasText !important;text-decoration:none !important;border-bottom:0;">${formattedText}</a>`
-                    : formattedText}</h2>
-                ${page ? `<p><strong>Page:</strong> ${page}</p>` : ""}
-                ${comment ? `<p><strong>Research comment:</strong> ${escapeHTML(comment)}</p>` : ""}
+                ${managedConfig?.include.color === false ? "" : `<p style="margin:8px 0 4px;">${indicator}<strong>${escapeHTML(colorLabel || (type === "highlight" ? "Highlight" : type === "underline" ? "Underline" : "Annotation"))}</strong></p>`}
+                <h2><strong>“${annotationLink
+                    ? `<a href="${annotationLink}" >${formattedText}</a>`
+                    : formattedText}”</strong></h2>
+                ${page && managedConfig?.include.page === true ? `<p><strong>Page:</strong> ${page}</p>` : ""}
+                ${comment ? `<p><strong>Comment:</strong> ${escapeHTML(comment)}</p>` : ""}
                 ${themes.length
                     ? `<p><strong>Themes:</strong> ${themes.map(escapeHTML).join(", ")}</p>`
                     : ""}
                 ${experiments.length
                     ? `<p><strong>Experiments:</strong> ${experiments.map(escapeHTML).join(", ")}</p>`
                     : ""}
-                ${tags.length
+                ${structuredFieldsHTML}
+                ${tags.length && managedConfig?.include.tags === true
                     ? `<p><strong>Tags:</strong> ${tags.map(escapeHTML).join(", ")}</p>`
                     : ""}
             </div>
         `;
 
-        entries.push({
+        return {
             key: annotationKey,
             pageIndex,
             positionY,
             positionX,
             color,
             html: entryHTML
-        });
+        };
+},
+async _syncPaperResearchNoteNow(annotation) {
+    if(this._colorMappingPDFs?.has(annotation.parentID))return;
+    if(this._managedEngineRequired&&(typeof AnnotaInfrastructure==='undefined'||!AnnotaInfrastructure.state))throw Error("Managed note infrastructure did not initialize. The existing note is preserved; restore storage or restart the extension before updating.");
+    if (typeof AnnotaCardFields !== "undefined" && AnnotaCardFields?._maintenance) throw Error("Note synchronization is paused during data import/recovery.");
+    if (!annotation?.parentID) return;
+
+    const attachmentID = annotation.parentID;
+    if (!attachmentID) return;
+
+    if (typeof AnnotaInfrastructure !== "undefined") {
+        const source = await Zotero.Items.getAsync(attachmentID);
+        if(!source?.isAttachment?.()||(typeof source.isFileAttachment==='function'&&!source.isFileAttachment()))return;
+        if (source?.isPDFAttachment?.() || source?.attachmentContentType === "application/pdf") {
+            let config = AnnotaInfrastructure.notes.pdfConfig(source, annotation.libraryID);
+            config = await AnnotaInfrastructure.notes.recoverOrphan(config);
+            if(config.managementDisabled)return;
+            if (config.mode === "static" && !annotation.orderChange && (config.noteKey || !annotation.manualSync) || config.mode === "manual" && !annotation.manualSync) return;
+        }
+    }
+
+    const result = await this._getOrCreatePaperResearchNote(annotation, !annotation.existingOnly);
+    if (!result) return;
+    const { note } = result;
+    const libraryID = annotation.libraryID;
+
+    const attachment = await Zotero.Items.getAsync(attachmentID);
+
+    if (!attachment || !attachment.isAttachment?.()) {
+        throw new Error("Could not resolve PDF attachment for annotation links.");
+    }
+    const managed = typeof AnnotaInfrastructure !== "undefined" ? AnnotaInfrastructure.notes : null;
+    const managedConfig = managed?.pdfConfig(attachment, libraryID);
+    if (managedConfig && (managedConfig.mode === "static" && !annotation.orderChange && (managedConfig.noteKey || !annotation.manualSync) || managedConfig.mode === "manual" && !annotation.manualSync)) return;
+
+    const library = Zotero.Libraries.get(libraryID);
+
+    const libraryPath =
+        library?.libraryType === "group" && library.groupID
+            ? `groups/${library.groupID}`
+            : "library";
+
+    const pdfLinkBase =
+        `zotero://open-pdf/${libraryPath}/items/${attachment.key}`;
+
+    const escapeHTML = value =>
+        String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+
+    // Load every annotation belonging to this PDF.
+    let ids;
+    if (typeof attachment.getAnnotations === "function") {
+        try { ids = attachment.getAnnotations(false, true); }
+        catch (_) { /* Older/unloaded readers retain the existing search fallback. */ }
+    }
+    if (!Array.isArray(ids)) {
+        const search = new Zotero.Search(); search.libraryID = libraryID;
+        search.addCondition("resultLevel", "annotation"); ids = await search.search();
+    }
+    const annotations = [];
+
+    for (const id of ids) {
+        const item = await Zotero.Items.getAsync(id);
+
+        if (
+            item?.isAnnotation?.() && !item.deleted &&
+            !this._deletedAnnotationKeys?.has(`${item.libraryID}:${item.key}`) &&
+            item.parentID === attachmentID
+        ) {
+            annotations.push(item);
+            if (!this._annotationParents) this._annotationParents = new Map();
+            this._annotationParents.set(item.id, { parentID: attachmentID, libraryID, key: item.key });
+        }
+    }
+
+    // A newly converted annotation may not yet appear in Zotero's search results.
+    // Ensure the annotation that triggered this rebuild is included.
+    if (
+        annotation.id && annotation.parentID === attachmentID &&
+        !annotations.some(item => item.id === annotation.id)
+    ) {
+        const currentAnnotation = await Zotero.Items.getAsync(annotation.id);
+
+        if (
+            currentAnnotation?.isAnnotation?.() && !currentAnnotation.deleted &&
+            !this._deletedAnnotationKeys?.has(`${libraryID}:${currentAnnotation.key}`) &&
+            currentAnnotation.parentID === attachmentID
+        ) {
+            annotations.push(currentAnnotation);
+            log(
+                "Added triggering annotation missing from search results: "
+                + currentAnnotation.key
+            );
+        }
+    }
+
+    // Load native tags explicitly: newly created annotations may have only primary data cached.
+    await Zotero.Items.loadDataTypes?.(annotations,['tags']);
+    // Read research metadata once for the complete rebuild.
+    const metadata = await this._getResearchMetadata(libraryID);
+    const colorLabels = this.getColorLabels();
+
+    // Structured fields are stored separately from Zotero's native Comment.
+    if (typeof AnnotaCardFields !== "undefined" && AnnotaCardFields) {
+        await AnnotaCardFields.load();
+    }
+
+    const entries = [];
+
+    const publication = attachment.parentID ? await Zotero.Items.getAsync(attachment.parentID) : attachment;
+    for (const item of annotations) {
+        const entry = this._renderManagedAnnotationEntry(item, { libraryID, metadata, colorLabels, pdfLinkBase, escapeHTML, managedConfig });
+        if (managed?.decorateEntry) managed.decorateEntry(entry, item, managedConfig, publication);
+        entries.push(entry);
     }
 
     // PDF order is the default. Color order groups by actual annotation
     // color, retaining reading order inside each color group.
-    const noteSortOrder = getPref("paperNoteSortOrder", "pdf");
+    const noteSortOrder = managedConfig?.colorOrder?.length ? "override" : getPref("paperNoteSortOrder", "pdf");
 
     const comparePDFPosition = (a, b) =>
         a.pageIndex - b.pageIndex ||
@@ -1508,7 +2047,8 @@ async _syncPaperResearchNoteNow(annotation) {
         a.positionX - b.positionX ||
         a.key.localeCompare(b.key);
 
-    if (noteSortOrder === "color") {
+    if(noteSortOrder === "override"){entries.sort((a,b)=>managed.compareColor(a,b,managedConfig)||comparePDFPosition(a,b));}
+    else if (noteSortOrder === "color") {
         entries.sort((a, b) =>
             a.color.localeCompare(b.color) ||
             comparePDFPosition(a, b)
@@ -1518,94 +2058,23 @@ async _syncPaperResearchNoteNow(annotation) {
         entries.sort(comparePDFPosition);
     }
 
-    // Preserve the note heading and introductory text, but discard all
-    // previous managed entries. This also removes duplicates and stale entries.
-    let content = note.getNote() || "";
-
-
-
-    // Zotero strips custom entry attributes and wrapper divs when saving.
-    // Prefer the annotation link preserved in each managed heading.
-    const attributeIndex = content.indexOf("data-ra-entry=");
-    const markerIndex = content.indexOf("RA_ENTRY_START:");
-
-    let entryStart = -1;
-
-    if (attributeIndex >= 0) {
-        entryStart = content.lastIndexOf("<div", attributeIndex);
-    }
-    else if (markerIndex >= 0) {
-        const markerDivStart = content.lastIndexOf("<div", markerIndex);
-        const markerParagraphStart = content.lastIndexOf("<p", markerIndex);
-
-        entryStart = markerDivStart >= 0
-            ? markerDivStart
-            : markerParagraphStart;
-    }
-    else {
-        const headings = content.matchAll(
-            /<h2\b[^>]*>[\s\S]*?<\/h2>/gi
-        );
-
-        for (const heading of headings) {
-            if (
-                /href=["']zotero:\/\/open-pdf\/[^"']*annotation=/i.test(
-                    heading[0]
-                )
-            ) {
-                // Include the generated colour-label paragraph immediately
-                // before the first managed annotation heading.
-                const precedingParagraphStart =
-                    content.lastIndexOf("<p", heading.index);
-
-                if (precedingParagraphStart >= 0) {
-                    const precedingParagraphEnd = content.indexOf(
-                        "</p>",
-                        precedingParagraphStart
-                    );
-
-                    const precedingParagraph =
-                        content.substring(
-                            precedingParagraphStart,
-                            precedingParagraphEnd >= 0
-                                ? precedingParagraphEnd + 4
-                                : heading.index
-                        );
-
-                    entryStart =
-                        precedingParagraphEnd >= 0
-                        && precedingParagraphEnd < heading.index
-                        && /<mark\b|background-color\s*:/i.test(precedingParagraph)
-                            ? precedingParagraphStart
-                            : heading.index;
-                }
-                else {
-                    entryStart = heading.index;
-                }
-                break;
-            }
-        }
-    }
-
-
-    if (entryStart >= 0) {
-        content = content.substring(0, entryStart);
-    }
-    const numberedEntries = entries.map((entry, index) =>
-        entry.html.replace(
-            /<h2>([\s\S]*?)<\/h2>/i,
-            `<h2>${index + 1}. $1</h2>`
-        )
-    );
-
-    content =
-        content.replace(/\s*$/, "\n")
-        + numberedEntries.join("\n");
+    const numberedEntries = entries.filter(entry => !this._deletedAnnotationKeys?.has(entry.key))
+        .map((entry, index) => entry.html.trim().replace(
+        /(<h2\b[^>]*>)([\s\S]*?)<\/h2>/i, `$1${index + 1}. $2</h2>`));
+    const separator = '\n<hr style="border:0;border-top:1px solid #b0b0b0;margin:10px 0;">\n';
+    const generated = Object.fromEntries(entries.map((entry, i) => [entry.key, numberedEntries[i]]));
+    let content = managed ? managed.preparePDF(note, annotations, managedConfig, numberedEntries.join(separator), generated)
+        : this._replaceManagedResearchEntries(note.getNote() || "", numberedEntries.join(separator));
+    if (managed) content = managed.stamp(content,managedConfig,annotations);
+    const snapshot = managed ? { ...managedConfig, noteKey: note.key, generated, content,
+        recordKeys: annotations.filter(item => AnnotaCardFields.get(item)).map(item => item.key), updatedAt: new Date().toISOString() } : null;
 
     // Avoid rewriting and refreshing an already up-to-date research note.
     const existingNoteContent = note.getNote() || "";
 
-    if (existingNoteContent === content) {
+    if (existingNoteContent === content || managed?.keepNormalized(existingNoteContent,content,managedConfig.generated,generated)) {
+        if(snapshot)snapshot.content=existingNoteContent;
+        if(managed)await managed.configure(snapshot);
         log(
             "Paper research note unchanged; skipped refresh. Note: "
             + note.key
@@ -1619,6 +2088,7 @@ async _syncPaperResearchNoteNow(annotation) {
 
     const generatedNoteKey = `${note.libraryID}:${note.key}`;
 
+    if(managed?.config(managedConfig.library,managedConfig.scope)?.managementDisabled)return;
     note.setNote(content);
 
     // Register the expected content before saving to guard against
@@ -1632,6 +2102,7 @@ async _syncPaperResearchNoteNow(annotation) {
 
     // Zotero may normalize the HTML during saving.
     const savedNoteHTML = note.getNote() || content;
+    if(managed)await managed.configure({...snapshot,content:savedNoteHTML});
 
 
 
@@ -1921,161 +2392,13 @@ async _saveResearchMetadata(libraryID, data) {
 },
 
 async _migrateResearchMetadataToTags(libraryID) {
-    const note = await this._findResearchMetadataNote(libraryID);
-
-    if (!note) {
-        log("No legacy ResearchAnnotator metadata note found. Nothing to migrate.");
-        return { migrated: false, reason: "No legacy metadata note found." };
+    await this.migrateLegacyGlobalFields();
+    if (!this._globalMigrationLibraries?.has(libraryID)) {
+        throw new Error("Global-field migration incomplete; original metadata preserved.");
     }
-
-    const legacy = await this._getResearchMetadataFromNote(libraryID);
-
-    // Merge any tags from an earlier or partial migration attempt.
-    // This makes migration retries non-destructive.
-    const existingTags = await this._getResearchMetadata(libraryID);
-
-    const mergeValues = (oldValues, newValues) => [
-        ...new Set([
-            ...(Array.isArray(oldValues) ? oldValues : []),
-            ...(Array.isArray(newValues) ? newValues : [])
-        ])
-    ];
-
-    legacy.themes = mergeValues(legacy.themes, existingTags.themes);
-    legacy.experiments = mergeValues(
-        legacy.experiments,
-        existingTags.experiments
-    );
-
-    for (const [key, tagged] of Object.entries(existingTags.annotations)) {
-        const oldSaved = legacy.annotations[key] || {};
-
-        legacy.annotations[key] = {
-            ...tagged,
-            ...oldSaved,
-            themes: mergeValues(oldSaved.themes, tagged.themes),
-            experiments: mergeValues(
-                oldSaved.experiments,
-                tagged.experiments
-            )
-        };
-    }
-
-    const annotations = await this._getAllResearchAnnotations(libraryID);
-
-    const hasLegacyData =
-        legacy.themes.length > 0 ||
-        legacy.experiments.length > 0 ||
-        Object.keys(legacy.annotations).length > 0;
-
-    if (!annotations.length && hasLegacyData) {
-        throw new Error(
-            "Migration stopped: the library has no annotations to store the metadata on. " +
-            "The original metadata note has been preserved."
-        );
-    }
-
-    const itemsByKey = new Map(
-        annotations.map(item => [`${libraryID}:${item.key}`, item])
-    );
-
-    for (const [key, saved] of Object.entries(legacy.annotations)) {
-        const hasData =
-            (saved.themes || []).length > 0 ||
-            (saved.experiments || []).length > 0 ||
-            Boolean(saved.researchComment);
-
-        if (hasData && !itemsByKey.has(key)) {
-            throw new Error(
-                "Migration stopped: an annotation with saved metadata could not be found: " +
-                key + ". The original metadata note has been preserved."
-            );
-        }
-    }
-
-    // Preserve legacy comments in Zotero's native annotation comment field.
-    for (const [key, saved] of Object.entries(legacy.annotations)) {
-        const legacyComment = String(saved.researchComment || "").trim();
-        if (!legacyComment) continue;
-
-        const item = itemsByKey.get(key);
-        if (!item) continue;
-
-        const existingComment = String(item.annotationComment || "").trim();
-
-        if (!existingComment) {
-            item.annotationComment = legacyComment;
-            await item.saveTx();
-        }
-        else if (!existingComment.includes(legacyComment)) {
-            item.annotationComment =
-                existingComment + "\n\n" + legacyComment;
-            await item.saveTx();
-        }
-    }
-
-    // Write only per-annotation assignments as automatic Zotero tags.
-    await this._saveResearchMetadata(libraryID, legacy);
-
-    // Read the tags back and verify annotation assignments before deleting
-    // the old note. Unassigned legacy catalog suggestions are intentionally
-    // not migrated because suggestions now derive from active assignments.
-    const migrated = await this._getResearchMetadata(libraryID);
-
-    const missingAssignments = [];
-    const missingComments = [];
-
-    for (const [key, saved] of Object.entries(legacy.annotations)) {
-        const actual = migrated.annotations[key] || {};
-
-        for (const value of (saved.themes || [])) {
-            if (!(actual.themes || []).includes(value)) {
-                missingAssignments.push(key + " theme: " + value);
-            }
-        }
-
-        for (const value of (saved.experiments || [])) {
-            if (!(actual.experiments || []).includes(value)) {
-                missingAssignments.push(key + " experiment: " + value);
-            }
-        }
-
-        const legacyComment = String(saved.researchComment || "").trim();
-
-        if (legacyComment) {
-            const item = itemsByKey.get(key);
-            const actualComment = String(item?.annotationComment || "");
-
-            if (!actualComment.includes(legacyComment)) {
-                missingComments.push(key);
-            }
-        }
-    }
-
-    if (missingAssignments.length || missingComments.length) {
-        throw new Error(
-            "Migration verification failed. The old metadata note was preserved. " +
-            "Missing assignments: " + missingAssignments.join(", ") +
-            " | Missing comments: " + missingComments.join(", ")
-        );
-    }
-
-    // Delete the old note only after successful read-back verification.
-    await note.eraseTx();
-
-    log(
-        "ResearchAnnotator metadata migration completed. Library: " +
-        libraryID + " | Annotations checked: " + annotations.length +
-        " | Legacy metadata note deleted."
-    );
-
-    return {
-        migrated: true,
-        annotationsChecked: annotations.length,
-        themes: migrated.themes.length,
-        experiments: migrated.experiments.length
-    };
+    return { migrated: true, legacyMetadataPreserved: true };
 },
+
 async _updateResearchMetadata(libraryID, updater) {
     if (!this._researchMetadataQueues) {
         this._researchMetadataQueues = new Map();
@@ -2323,7 +2646,16 @@ async _removePaperResearchNoteEntry(libraryID, annotationKey) {
     }
 
     const conversionKey = `${item.libraryID}:${item.key}`;
-    const conversion = this._pendingAnnotationConversions?.get(conversionKey);
+    let conversion = this._pendingAnnotationConversions?.get(conversionKey);
+    if (!conversion && typeof AnnotaInfrastructure !== "undefined") {
+        const candidates = [...(this._activeStructuredConversions?.values() || [])].filter(source => source.libraryID === item.libraryID
+            && source.parentID === item.parentID && source.targetType === item.annotationType && source.text === this._normText(item.annotationText || ""));
+        if (candidates.length === 1) {
+            conversion = { ...candidates[0], newID: item.key, newAnnotationKey: conversionKey, processing: false };
+            if (!this._pendingAnnotationConversions) this._pendingAnnotationConversions = new Map();
+            this._pendingAnnotationConversions.set(conversionKey, conversion);
+        }
+    }
 
     if (!conversion) {
         return false;
@@ -2340,6 +2672,9 @@ async _removePaperResearchNoteEntry(libraryID, annotationKey) {
         const libraryID = item.libraryID;
         const oldKey = conversion.oldAnnotationKey;
         const newKey = conversionKey;
+        if (typeof AnnotaInfrastructure !== "undefined") {
+            await AnnotaCardFields.transfer({ libraryID, key: conversion.oldID }, item);
+        }
 
         let migratedMetadata = false;
 
@@ -2403,8 +2738,16 @@ async _removePaperResearchNoteEntry(libraryID, annotationKey) {
 async handleResearchMetadata(id) {
     let item = await Zotero.Items.getAsync(id);
 
-    if (!item || !item.isAnnotation || !item.isAnnotation()) return;
+    if (!item || !item.isAnnotation || !item.isAnnotation() || item.library?.editable === false) return;
 
+    // Native creation drafts are scoped to the PDF and exact normalized selection.
+    const draftKey = String(item.parentID || "") + "/" + this._normText(item.annotationText || "");
+    const draft = this._nativeCommentDrafts?.get(draftKey);
+    if (draft && Date.now() - draft.ts <= 600000 && !item.annotationComment) {
+        item.annotationComment = draft.value;
+        try { await item.saveTx(); this._nativeCommentDrafts.delete(draftKey); }
+        catch (error) { item.annotationComment = ""; throw error; }
+    }
     let pending = this._pendingResearch;
     if (!pending) return;
 
@@ -2428,8 +2771,6 @@ async handleResearchMetadata(id) {
         );
 
     if (!matches) return;
-
-    let comment = String(pending.values?.comment || "").trim();
 
     let tags = [
         ...new Set(
@@ -2456,12 +2797,6 @@ async handleResearchMetadata(id) {
     ];
 
     let changed = false;
-
-    // Save the ResearchAnnotator comment in Zotero's native field.
-    if ((item.annotationComment || "") !== comment) {
-        item.annotationComment = comment;
-        changed = true;
-    }
 
     // Apply native Zotero tags.
     let existingTags = new Set(
@@ -2499,7 +2834,6 @@ async handleResearchMetadata(id) {
                 experiments
             };
 
-            delete annotationMetadata.researchComment;
             metadata.annotations[annotationKey] = annotationMetadata;
         });
     }
@@ -2509,165 +2843,61 @@ async handleResearchMetadata(id) {
 
     log("Research metadata saved for annotation " + id);
 },
-	async handleItem(id, notifiedAt) {
-		if (this.inProgress.has(id)) return;
-		let tEnter = Date.now();
-
-		let item;
-		try {
-			item = await Zotero.Items.getAsync(id);
-		}
-		catch (e) {
-			return;
-		}
-		if (!item || !item.isAnnotation || !item.isAnnotation()) return;
-
-		if (!this.targetTypes().includes(item.annotationType)) return;
-
-		// Bibliothèque en lecture seule ? on ignore.
-		if (item.library && item.library.editable === false) return;
-
-		// Zone encadrée : pas de texte sélectionné, on lit celui que la zone
-		// contient (PDF ouvert dans le lecteur).
-		let isImage = item.annotationType === "image";
-		let key = this.keyForItem(item);
-		let text = isImage ? "" : (item.annotationText || "").trim();
-		if (!text && !isImage) return;
-
-		// Mode 1 (automatique) : ne se déclenche que si la couleur a un prompt
-		// ET que ce prompt est réglé sur « auto ». Les couleurs « manuel » ne
-		// réagissent qu'au menu contextuel. Couleur sans prompt = ignorée.
-		let entry = this.getColorEntry(key);
-		if (!entry) {
-			log("annotation " + id + " ignorée : couleur " + item.annotationColor
-				+ " sans prompt, gabarit ni champs");
-			return;
-		}
-		// Sert de couleur par défaut au prochain formulaire de sélection : on
-		// surligne rarement une seule fois dans la même couleur.
-		if (!isImage) this._lastColor = item.annotationColor;
-
-		// Un formulaire rempli dans le popup de sélection VAUT demande explicite :
-		// on exécute même sur une couleur réglée sur « à la demande », sinon la
-		// saisie serait silencieusement perdue à la validation.
-		let pending = isImage ? null : this.peekPendingFields(text);
-		let filled = this._hasFilledValues(pending);
-		if (entry.trigger !== "auto" && !filled) {
-			log("annotation " + id + " ignorée : couleur en mode « à la demande »"
-				+ " et aucun champ saisi");
-			return;
-		}
-
-		// Commentaire déjà saisi (paraphrase manuelle) : capturé avant tout,
-		// pour la variable {{comment}} et pour respecter « ne pas écraser ».
-		let existing = (item.annotationComment || "").trim();
-		let overwrite = getPref("overwrite", false);
-		if (existing && !overwrite) return;
-
-		// Un commentaire monté à la main n'appelle aucun modèle : inutile
-		// d'exiger une clé API ou le CLI dans ce cas. On raisonne sur CETTE
-		// annotation (willCallProvider), pas sur la couleur en général, car un
-		// formulaire entièrement rempli ne laisse rien à demander.
-		let callsProvider = this.willCallProvider(entry, pending);
-		if (isImage && callsProvider) {
-			text = await this.areaText(item);
-			if (!text) {
-				log("zone " + id + " : aucun texte lisible, champs laissés à la saisie");
-				return;
-			}
-		}
-		if (callsProvider) {
-			let notReady = this.providerReadyError();
-			if (notReady) {
-				toast("Annota", notReady, "error");
-				return;
-			}
-		}
-
-		this.inProgress.add(id);
-		let usedPlaceholder = false;
-		try {
-			if (getPref("showPlaceholder", true) && callsProvider) {
-				item.annotationComment = PLACEHOLDER;
-				await item.saveTx();
-				usedPlaceholder = true;
-			}
-
-			let tBuild = Date.now();
-			let ctx = this.getContext(item);
-			// Valeurs saisies dans le popup de sélection juste avant validation.
-			let fields = isImage ? {} : this.takePendingFields(text);
-			// Résolution des références différée : buildComment ne l'appelle que
-			// si le commentaire ou le modèle s'en sert. Elle ouvre le PDF et en
-			// parcourt les liens, ce qui se paie en secondes.
-			let built = {};
-			let comment = await this.buildComment({
-				text, ctx, color: key, comment: existing, fields,
-				getRefs: () => this.getReferences(item, text), out: built
-			});
-			if (comment === null) return;
-			// Un commentaire vide signifie que rien n'a pu être produit (champs
-			// perdus, gabarit sans contenu) : ne pas écraser pour autant.
-			if (!String(comment).trim()) {
-				log("rien à écrire pour l'annotation " + id + " (résultat vide)");
-				// Un vide APRÈS un appel au modèle est un échec, pas un choix :
-				// on le signale. Un vide sans appel (couleur non configurée,
-				// formulaire laissé vierge) n'a rien d'anormal.
-				if (callsProvider) await this.markFailed(id, "résultat vide");
-				return;
-			}
-
-			// Recharger l'item au cas où il aurait changé pendant l'appel réseau.
-			let fresh = await Zotero.Items.getAsync(id);
-			if (!fresh) return;
-			this.rememberFields(fresh, built, comment);
-			fresh.annotationComment = comment;
-			this.setFailedTag(fresh, false);   // succès : l'échec précédent s'efface
-			let tSave = Date.now();
-			await fresh.saveTx();
-			tSave = Date.now() - tSave;
-
-			// Relevé complet : c'est la seule façon de distinguer ce qu'Annota
-			// consomme de ce qu'elle attend. « notif » = délai entre l'événement
-			// de création et notre prise en main (Zotero et les autres modules),
-			// « écriture » = durée de la transaction, qui peut être mise en file
-			// derrière d'autres travaux en cours.
-			let t = this._timings || { refs: 0, ai: 0, build: 0 };
-			log("annotation " + id + " — relevé : notif="
-				+ (notifiedAt ? tEnter - notifiedAt : 0) + " ms, prépa="
-				+ (tBuild - tEnter) + " ms, refs=" + t.refs + " ms, ia=" + t.ai
-				+ " ms, écriture=" + tSave + " ms, total Annota="
-				+ (Date.now() - tEnter) + " ms");
-		}
-		catch (e) {
-			log("Generation error: " + e);
-			toast("Annota", this.t("gen.failed", { msg: e.message || e }), "error");
-			await this.markFailed(id, String(e.message || e));
-			// Nettoyer le placeholder en cas d'échec.
-			if (usedPlaceholder) {
-				try {
-					let fresh = await Zotero.Items.getAsync(id);
-					if (fresh && (fresh.annotationComment || "").trim() === PLACEHOLDER) {
-						fresh.annotationComment = "";
-						await fresh.saveTx();
-					}
-				}
-				catch (e2) { /* ignore */ }
-			}
-		}
-		finally {
-			this.inProgress.delete(id);
-		}
-	},
-
-	// ---- Échecs visibles ----
+    aiGenerationTrigger(color) { return this.getColorEntry(color)?.trigger === "manual" ? "manual" : "auto"; },
+    refreshAIFieldViews() { if (typeof AnnotaCardFields !== "undefined") AnnotaCardFields.refreshViews(); },
+    canGenerateAIFields(item) {
+        const color=this.colorKey(item.annotationColor || item.color,item.annotationType || item.type);
+        return this.aiGenerationTrigger(color) === "manual" &&
+            this.annotationFields(color).some(field => field.type === "ai" &&
+                !String(AnnotaCardFields.get(item)?.values[field.name] || "").trim() && !AnnotaCardFields.fieldState(item,field).error);
+    },
+    async requestAIFields(item, options = {}) {
+        if (typeof AnnotaInfrastructure !== "undefined") return AnnotaInfrastructure.generateJob(item, options);
+        return this.generateStructuredFields(item, { partial:true, ...options });
+    },
+    async handleItem(id, notifiedAt) {
+        if (this.inProgress.has(id)) return;
+        this.inProgress.add(id);
+        try {
+            const item = await Zotero.Items.getAsync(id);
+            if (!item?.isAnnotation?.() || item.deleted || item.library?.editable === false) return;
+            if (this.captureEvidence?.handles(item)) return;
+            const color = this.keyForItem(item);
+            const schema = this.annotationFields(color);
+            if (!schema.length) return;
+            const text = String(item.annotationText || "").trim();
+            const pending = item.annotationType === "image" ? null : this.peekPendingFields(text, item);
+            const fields = {};
+            for (const field of schema) {
+                if (field.type !== "ai" && pending && Object.hasOwn(pending, field.name)) {
+                    fields[field.name] = pending[field.name];
+                }
+            }
+            if (!AnnotaCardFields) throw new Error("Structured field storage is unavailable.");
+            if (Object.keys(fields).length) {
+                await AnnotaCardFields.saveValues(item, fields);
+                this.takePendingFields(text, item);
+            }
+            if (item.annotationType !== "image") this._lastColor = item.annotationColor;
+            if (schema.some(field => field.type === "ai") && this.aiGenerationTrigger(color) === "auto") {
+                await this.requestAIFields(item, { automatic:true });
+            }
+            else await this._syncPaperResearchNote(item);
+        }
+        catch (e) {
+            log("New annotation structured fields: " + e);
+            toast("ResearchAnnotator", this.t("gen.failed", { msg: e.message || e }), "error");
+        }
+        finally { this.inProgress.delete(id); }
+    },
+	// Visible generation failures.
 	//
-	// Un appel raté laissait un surlignage sans commentaire : rien ne le
-	// distinguait d'un surlignage volontairement nu, et on ne s'en apercevait
-	// qu'en relisant. On pose donc une étiquette sur l'annotation — visible
-	// dans le lecteur, cherchable dans la bibliothèque, et point d'entrée du
-	// « Retry failed comments » du menu contextuel.
-	failedTag() {
+	// Historically failed calls were indistinguishable from deliberately empty
+	// annotations. A failure tag makes them visible without requiring
+	// the user to reread every annotation. It appears in the reader,
+	// is searchable in the library, and provides an explicit retry entry point.
+	// the context menu action "Retry failed comments".
+      failedTag() {
 		if (!getPref("markFailures", true)) return "";
 		return String(getPref("failedTag", "annota-failed") || "").trim();
 	},
@@ -2678,8 +2908,8 @@ async handleResearchMetadata(id) {
 		catch (e) { return false; }
 	},
 
-	// Pose l'étiquette SANS enregistrer : l'appelant groupe avec sa propre
-	// écriture quand il en a une, pour ne pas provoquer deux rafraîchissements.
+	// Add the tag without saving so the caller can include it in the same
+	// transaction and avoid two UI refreshes.
 	setFailedTag(item, on) {
 		let tag = this.failedTag();
 		if (!tag) return false;
@@ -2700,7 +2930,7 @@ async handleResearchMetadata(id) {
 			let fresh = await Zotero.Items.getAsync(id);
 			if (fresh && this.setFailedTag(fresh, true)) {
 				await fresh.saveTx();
-				log("annotation " + id + " marquée en échec : " + why);
+				log("annotation " + id + " marked failed: " + why);
 			}
 		}
 		catch (e) {
@@ -2708,14 +2938,14 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// Tronque une chaîne à `max` caractères (0/absent = pas de limite).
+	// Truncate to max characters; zero or missing means no limit.
 	truncate(s, max) {
 		s = String(s || "").trim();
 		if (!max || s.length <= max) return s;
 		return s.slice(0, max).trim() + "…";
 	},
 
-	// Métadonnées du document source, pour les variables {{title}}, {{authors}},
+	// Source metadata for variables such as {{title}} and {{authors}}.
 	// {{year}}, {{abstract}}, {{publication}}, {{page}}.
 	getContext(item) {
 		let ctx = {
@@ -2723,10 +2953,10 @@ async handleResearchMetadata(id) {
 			abstract: "", publication: "", page: ""
 		};
 		try {
-			// Page de l'annotation (telle qu'affichée dans le PDF).
+			// Annotation page label as displayed in the PDF.
 			ctx.page = item.annotationPageLabel || "";
 
-			let parent = item.parentItem;               // pièce jointe (PDF)
+			let parent = item.parentItem;               // PDF attachment.
 			let top = (parent && parent.parentItem) ? parent.parentItem : parent;
 			if (top && typeof top.getField === "function") {
 				ctx.title = top.getField("title") || "";
@@ -2755,26 +2985,26 @@ async handleResearchMetadata(id) {
 		return ctx;
 	},
 
-	// ---- Résolution des références citées dans le passage ----
+	// Resolve references cited in the passage.
 	//
-	// Quand le passage contient « [1] » ou « (Moulin, 1999) », on va chercher
-	// l'entrée bibliographique correspondante DANS LE PDF (section References)
-	// et on la transmet à l'IA. Le texte du PDF est extrait via
-	// Zotero.PDFWorker.getFullText puis mis en cache par pièce jointe.
+	// For numeric or author-year citations, find the corresponding
+	// bibliographic entry within the PDF reference section and supply
+	// it as research context. Extract PDF text with
+	// Zotero.PDFWorker.getFullText and cache it per attachment.
 	//
-	// Limite assumée : suppose que la bibliographie est présente comme texte
-	// dans le PDF. Sinon on renvoie "" et rien ne change.
+	// This requires a text bibliography in the PDF. Otherwise return
+	// an empty string and leave the workflow unchanged.
 
 	_fullTextCache: new Map(),
 
-	// Détecte les appels de citation dans le passage surligné.
+	// Detect citation calls in the highlighted passage.
 	detectCitationMarkers(text) {
 		let numbers = new Set();
 		let authorYears = [];
 		let seen = new Set();
 		let m;
 
-		// Numériques : [1] [1,2] [1-3] [1, 2, 5–7]
+		// Numeric forms include single references, lists and ranges.
 		let numRe = /\[([\d\s,;‐-―-]+)\]/g;
 		while ((m = numRe.exec(text)) !== null) {
 			if (!/\d/.test(m[1])) continue;
@@ -2795,7 +3025,7 @@ async handleResearchMetadata(id) {
 			if (author && !seen.has(key)) { seen.add(key); authorYears.push({ author, year }); }
 		};
 
-		// Auteur-année entre parenthèses : (Moulin, 1999 ; Jacques et al., 2009)
+		// Parenthesized author-year forms may contain several references.
 		let parenRe = /\(([^()]{3,200})\)/g;
 		while ((m = parenRe.exec(text)) !== null) {
 			for (let chunk of m[1].split(/;/)) {
@@ -2805,23 +3035,23 @@ async handleResearchMetadata(id) {
 			}
 		}
 
-		// Auteur-année narratif : Moulin (1999), Jacques et al. (2009)
+		// Narrative author-year citations follow the author's name.
 		let narrRe = /([\p{Lu}][\p{L}'’-]+(?:\s+(?:et\s+al\.?|and|&)\s*[\p{L}'’-]*)?)\s*\(((?:1[6-9]|20)\d{2})[a-z]?\)/gu;
 		while ((m = narrRe.exec(text)) !== null) pushAY(m[1], m[2]);
 
 		return { numbers: Array.from(numbers).sort((a, b) => a - b), authorYears };
 	},
 
-	// Texte intégral du PDF parent, mis en cache par pièce jointe.
+	// Parent PDF text, cached per attachment.
 	async getAttachmentFullText(item) {
 		try {
-			let att = item.parentItem;   // l'annotation appartient à la pièce jointe
+			let att = item.parentItem;   // The annotation belongs to this attachment.
 			if (!att || !att.isPDFAttachment || !att.isPDFAttachment()) return "";
 			if (this._fullTextCache.has(att.id)) return this._fullTextCache.get(att.id);
 
 			let res = await Zotero.PDFWorker.getFullText(att.id, null);
 			let text = (res && res.text) ? String(res.text) : "";
-			// Cache borné : quelques documents en mémoire au plus.
+			// Bound the number of documents retained in memory.
 			if (this._fullTextCache.size > 5) {
 				this._fullTextCache.delete(this._fullTextCache.keys().next().value);
 			}
@@ -2834,27 +3064,27 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// Isole la section bibliographique (dernière occurrence d'un titre connu).
+	// Find the bibliography using the last occurrence of a known heading.
 	findBibliographySection(fullText) {
 		if (!fullText) return "";
 		let re = /\b(references?|bibliograph(?:y|ie)|works\s+cited|literature\s+cited|r[eé]f[eé]rences?(?:\s+bibliographiques)?|referencias|refer[eê]ncias|literaturverzeichnis)\b\s*:?/gi;
 		let last = -1, m;
-		let floor = Math.floor(fullText.length * 0.4);   // seconde partie du document
+		let floor = Math.floor(fullText.length * 0.4);   // second part of the document
 		while ((m = re.exec(fullText)) !== null) {
 			if (m.index >= floor) last = m.index + m[0].length;
 		}
 		return last < 0 ? "" : fullText.slice(last);
 	},
 
-	// Coupe au début de l'entrée bibliographique SUIVANTE.
+	// Stop at the start of the next bibliography entry.
 	//
-	// Dans le texte extrait d'un PDF, les entrées se suivent souvent sans retour
-	// à la ligne : « …(last accessed 2023). Haddaway, N.R., P. Woodcock… ».
-	// Se fier au saut de ligne laissait donc déborder l'entrée voisine.
-	// On repère « ponctuation + espace » suivi d'un début d'entrée :
-	//   - « Nom, X. »  (nom de famille puis initiale) ;
-	//   - « [12] »     (bibliographie numérotée).
-	// Le seuil minKeep protège le début de l'entrée courante.
+	// PDF extraction often joins adjacent entries without a newline,
+	// for example a closing sentence followed by the next author's name.
+	// Relying on line breaks would include part of the neighboring entry.
+	// Detect punctuation plus whitespace followed by a plausible entry start:
+	// a surname followed by an initial,
+	// or a numeric bibliography marker such as [12].
+	// minKeep protects the beginning of the current entry.
 	_cutAtNextEntry(s, minKeep = 40) {
 		s = String(s);
 		let re = /[.!?)\]]\s+(\[\d{1,3}\]|\p{Lu}[\p{L}'’-]+,\s+\p{Lu}\.)/gu;
@@ -2866,7 +3096,7 @@ async handleResearchMetadata(id) {
 		return s;
 	},
 
-	// Coupe une entrée trop longue proprement.
+	// Truncate an excessively long entry at a clean boundary.
 	_trimEntry(s, max = 320) {
 		s = String(s).replace(/\s+/g, " ").trim();
 		if (s.length <= max) return s;
@@ -2875,10 +3105,10 @@ async handleResearchMetadata(id) {
 		return dot > max * 0.5 ? cut.slice(0, dot + 1) : cut.trim() + "…";
 	},
 
-	// Variantes « structurées » : renvoient { marker, entry } au lieu d'une
-	// chaîne. Les fonctions historiques ci-dessous s'appuient dessus, afin que
-	// l'index bibliographique et le prompt partagent exactement la même
-	// résolution.
+	// Structured variants return { marker, entry } rather than a string.
+	// Historical helpers delegate to these so the bibliography index
+	// and the provider prompt use exactly the same reference
+	// resolution rules.
 	resolveNumericRefs(bib, numbers) {
 		return this.resolveNumericRefsStructured(bib, numbers)
 			.map(r => r.marker + " " + r.entry);
@@ -2889,7 +3119,7 @@ async handleResearchMetadata(id) {
 			.map(r => r.marker + " → " + r.entry);
 	},
 
-	// Entrées numérotées : « [12] Auteur… » ou « 12. Auteur… »
+	// Numbered entries can start with a bracketed or dotted number.
 	resolveNumericRefsStructured(bib, numbers) {
 		if (!bib || !numbers.length) return [];
 		let markers = [], m;
@@ -2915,12 +3145,12 @@ async handleResearchMetadata(id) {
 		return out;
 	},
 
-	// Entrées auteur-année : fenêtre autour du nom suivi de l'année.
+	// For author-year entries, inspect the region around the name and year.
 	resolveAuthorYearRefsStructured(bib, pairs) {
 		if (!bib || !pairs.length) return [];
 		let out = [];
 		for (let { author, year } of pairs) {
-			// Nom de famille = premier mot (« Moulin et al. » → « Moulin »).
+			// Surname = first word ("Moulin et al." becomes "Moulin").
 			let surname = author.split(/\s+/)[0].replace(/[^\p{L}'’-]/gu, "");
 			if (surname.length < 2) continue;
 			let esc = surname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -2931,9 +3161,9 @@ async handleResearchMetadata(id) {
 				if (win.includes(year)) { found = win; break; }
 			}
 			if (found) {
-				// Fin d'entrée = début de l'entrée suivante, avec ou sans retour à
-				// la ligne. Ne PAS couper au premier point : il tombe juste après
-				// « (1999). » et amputerait le titre et la revue.
+				// An entry ends where the next begins, regardless of line breaks.
+				// Do not stop at the first period, often immediately after the year:
+				// doing so would discard the article title and journal.
 				let body = this._trimEntry(this._cutAtNextEntry(found));
 				if (body.length > 15) {
 					out.push({ marker: "(" + author + ", " + year + ")", entry: body });
@@ -2943,15 +3173,15 @@ async handleResearchMetadata(id) {
 		return out;
 	},
 
-	// ---- Voie déterministe : les liens internes du PDF ----
+	// Deterministic PDF internal-link resolution.
 	//
-	// C'est le mécanisme qui produit le popup au survol dans le lecteur Zotero :
-	// l'appel de citation est une annotation /Link du PDF dont la destination
-	// pointe sur l'entrée bibliographique. On suit ce lien plutôt que de deviner.
-	// Nécessite que le PDF soit ouvert dans un onglet (pdf.js y est chargé) ;
-	// sinon on retombe sur l'analyse du texte.
+	// The reader's citation-hover popup follows a PDF /Link annotation
+	// whose destination points to the bibliography entry. Follow that
+	// link instead of guessing the citation destination.
+	// Requires the PDF to be open in a reader tab with pdf.js loaded.
+	// Otherwise fall back to textual reference matching.
 
-	// Lecteur ouvert pour cette pièce jointe, ou null.
+	// Open reader for this attachment, or null.
 	findReaderFor(attachmentID) {
 		try {
 			let readers = Zotero.Reader && Zotero.Reader._readers;
@@ -2963,15 +3193,15 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// Objet de pdf.js sans vue Xray : celle-ci masque ses méthodes JS
-	// (getPage, getTextContent…) au code du plugin. Chaque résultat attendu
-	// d'une promesse de pdf.js repasse par ici.
+	// Access the pdf.js object without the Xray that hides its JavaScript
+	// methods from extension code. Expected pdf.js promise results
+	// also pass through this helper.
 	_waive(o) {
 		try { return (o && o.wrappedJSObject) || o; }
 		catch (e) { return o; }
 	},
 
-	// Document pdf.js du lecteur (traverse l'iframe du visualiseur).
+	// Reader pdf.js document, accessed through the viewer iframe.
 	getPDFDocument(reader) {
 		try {
 			let win = reader && reader._internalReader
@@ -2988,7 +3218,7 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// Deux rectangles PDF se recouvrent-ils ? (marge pour les exposants)
+	// Test PDF rectangle intersection with a margin for superscripts.
 	_rectsOverlap(a, b, pad = 2) {
 		let ax1 = Math.min(a[0], a[2]) - pad, ax2 = Math.max(a[0], a[2]) + pad;
 		let ay1 = Math.min(a[1], a[3]) - pad, ay2 = Math.max(a[1], a[3]) + pad;
@@ -2997,14 +3227,14 @@ async handleResearchMetadata(id) {
 		return ax1 <= bx2 && bx1 <= ax2 && ay1 <= by2 && by1 <= ay2;
 	},
 
-	// Résout la destination d'un lien en { pageIndex, y }.
+	// Resolve a link destination to { pageIndex, y }.
 	async _resolveDestination(pdfDoc, dest) {
 		try {
 			let d = dest;
 			if (typeof d === "string") d = this._waive(await pdfDoc.getDestination(d));
 			if (!Array.isArray(d) || !d.length) return null;
 			let pageIndex = await pdfDoc.getPageIndex(d[0]);
-			// [ref, {name:'XYZ'}, x, y, zoom] — y absent pour /Fit.
+			// Destination form: [ref, {name:'XYZ'}, x, y, zoom]; /Fit may omit y.
 			let y = (typeof d[3] === "number") ? d[3] : null;
 			return { pageIndex, y };
 		}
@@ -3014,7 +3244,7 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// Texte de la page à partir de la position de destination (vers le bas).
+	// Read page text downward from the destination position.
 	async _textAtDestination(pdfDoc, pageIndex, y, maxChars = 600) {
 		try {
 			let page = this._waive(await pdfDoc.getPage(pageIndex + 1));
@@ -3026,19 +3256,19 @@ async handleResearchMetadata(id) {
 				if (!str) continue;
 				let ty = (it.transform && it.transform.length > 5) ? it.transform[5] : null;
 				if (ty === null) continue;
-				// En coordonnées PDF l'origine est en bas : l'entrée commence à y
-				// et se poursuit vers le bas (y décroissant). Marge vers le haut
-				// pour rattraper une destination pointant la ligne au-dessus.
+				// PDF coordinates start at the bottom: the entry starts at y
+				// and continues toward decreasing y. Add an upward margin
+				// for destinations that point to the preceding line.
 				if (y !== null && ty > y + 12) continue;
 				rows.push({ y: ty, str, eol: it.hasEOL });
 			}
 			rows.sort((a, b) => b.y - a.y);
-			// Début d'une entrée bibliographique : « [12] », « 12. » ou « Nom, P. ».
+			// Recognize numeric markers or surname/initial bibliography starts.
 			let entryStart = /^(\[\d{1,3}\]|\d{1,3}\.\s|\p{Lu}[\p{L}'’-]+,\s+\p{Lu}\.)/u;
 			let out = "";
 			for (let r of rows) {
-				// S'arrêter au début de l'entrée SUIVANTE, sinon on colle deux
-				// références bout à bout et l'IA attribue la mauvaise source.
+				// Stop at the next entry to avoid combining references and
+				// causing the model to attribute evidence to the wrong source.
 				if (out.length > 30 && entryStart.test(r.str.trim())) break;
 				out += r.str + (r.eol ? "\n" : " ");
 				if (out.length >= maxChars) break;
@@ -3051,10 +3281,10 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// Texte contenu dans une zone encadrée (image, tableau), ligne par ligne.
-	// Lu dans pdf.js : le PDF doit être ouvert dans le lecteur, ce qui est le
-	// cas quand on vient de tracer la zone. Sinon, ou pour une image sans
-	// texte, chaîne vide.
+	// Read text inside an area annotation line by line.
+	// Use pdf.js, so the PDF must be open in the reader, as it is
+	// when an area is first drawn. If unavailable, or an image has no
+	// extractable text, return an empty string.
 	async areaText(item, maxChars = 6000) {
 		try {
 			let pos = JSON.parse(item.annotationPosition || "{}");
@@ -3078,7 +3308,7 @@ async handleResearchMetadata(id) {
 				if (!inside(x, y)) continue;
 				parts.push({ x: t[4], y: t[5], h, str });
 			}
-			// Lignes : même ordonnée à une demi-hauteur près, de haut en bas.
+			// Group lines within half a character height, ordered top to bottom.
 			parts.sort((a, b) => b.y - a.y || a.x - b.x);
 			let lines = [];
 			for (let p of parts) {
@@ -3096,8 +3326,8 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// Suit les liens internes chevauchant le surlignage. Renvoie [] si le PDF
-	// n'est pas ouvert ou ne contient pas de liens exploitables.
+	// Follow internal links overlapping the highlight. Return an empty list
+	// if the PDF is closed or has no usable links.
 	async getLinkedReferences(item) {
 		try {
 			let att = item.parentItem;
@@ -3119,7 +3349,7 @@ async handleResearchMetadata(id) {
 			let out = [], seen = new Set();
 			for (let a of annots) {
 				if (out.length >= max) break;
-				// Uniquement les liens internes (une destination, pas une URL).
+				// Follow only internal destinations, not external URLs.
 				let isLink = a && (a.subtype === "Link" || a.subtype === "link");
 				let dest = a && (a.dest || (a.action && a.action.dest));
 				if (!isLink || !dest || a.url) continue;
@@ -3136,7 +3366,7 @@ async handleResearchMetadata(id) {
 				txt = this._trimEntry(this._cutAtNextEntry(txt));
 				if (txt.length > 15) out.push(txt);
 			}
-			if (out.length) log("Références résolues par lien PDF : " + out.length);
+			if (out.length) log("References resolved through PDF links: " + out.length);
 			return out;
 		}
 		catch (e) {
@@ -3145,15 +3375,15 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// ---- Voie EPUB : les appels de note de bas de page ----
+	// EPUB footnote citation resolution.
 	//
-	// Dans un livre au format EPUB, la source est souvent renvoyée en note : le
-	// passage porte un numéro en exposant (« bref9. ») qui est un lien interne
-	// vers la note, laquelle donne l'auteur, l'ouvrage, l'année et la page. On
-	// lit l'EPUB lui-même (une archive zip), on retrouve le passage dans son
-	// chapitre, on relève les liens d'appel de note qu'il contient et on
-	// rapporte le texte de chaque note. Aucun lecteur ouvert n'est nécessaire,
-	// le traitement en lot depuis la bibliothèque en profite donc aussi.
+	// EPUB sources often appear in footnotes reached through superscript
+	// internal links. The note can identify the author, work, year and page.
+	// Read the EPUB archive itself, locate the passage in its chapter,
+	// collect footnote links from that passage and resolve their
+	// destinations to note text. This does not require an open reader,
+	// so library batch processing can use the same path.
+	// The batch workflow can therefore resolve these citations too.
 
 	_epubCache: new Map(),
 
@@ -3174,9 +3404,9 @@ async handleResearchMetadata(id) {
 		throw new Error("DOMParser indisponible");
 	},
 
-	// Lit une entrée de l'archive. Le fichier est rouvert à chaque lecture puis
-	// refermé : Zotero ne doit pas trouver le livre verrouillé s'il le déplace
-	// ou le synchronise.
+	// Open the archive for each entry read and close it afterward:
+	// Zotero must be free to move or synchronize the book without
+	// finding the archive locked.
 	async _readZipEntry(path, entry) {
 		let zr = Components.classes["@mozilla.org/libjar/zip-reader;1"]
 			.createInstance(Components.interfaces.nsIZipReader);
@@ -3196,7 +3426,7 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// Chemin d'une entrée relatif à une autre (« ../Text/notes.html#n4 »).
+	// Resolve an archive entry relative to another, including parent segments and fragments.
 	_joinPath(base, rel) {
 		rel = String(rel || "").split("#")[0].split("?")[0];
 		if (!rel) return base;
@@ -3208,15 +3438,15 @@ async handleResearchMetadata(id) {
 		}
 		let out = parts.join("/");
 		try { out = decodeURIComponent(out); }
-		catch (e) { /* chemin déjà décodé */ }
+		catch (e) { /* The path is already decoded. */ }
 		return out;
 	},
 
 	_parseMarkup(str, type) {
 		let parser = this._domParser();
 		let doc = parser.parseFromString(str, type || "application/xhtml+xml");
-		// Certains EPUB servent du HTML mal formé : l'analyseur XML le refuse,
-		// l'analyseur HTML le lit.
+		// Some EPUBs contain malformed HTML rejected by the XML parser;
+		// the HTML parser can still read it.
 		let broken = !doc || !doc.documentElement
 			|| doc.documentElement.localName === "parsererror"
 			|| doc.getElementsByTagName("parsererror").length > 0;
@@ -3224,9 +3454,9 @@ async handleResearchMetadata(id) {
 		return doc;
 	},
 
-	// Livre ouvert : chapitres dans l'ordre de lecture (spine) et documents
-	// déjà analysés. Gardé dix minutes : une séance de lecture surligne
-	// plusieurs passages du même livre.
+	// Cache reading-order spine chapters and parsed documents for an open book.
+	// Keep them for ten minutes because reading sessions annotate several
+	// passages from the same book.
 	async _openEPUB(att) {
 		let path = await att.getFilePathAsync();
 		if (!path) return null;
@@ -3249,8 +3479,8 @@ async handleResearchMetadata(id) {
 			let id = it.getAttribute("id"), href = it.getAttribute("href");
 			if (id && href) idToHref.set(id, this._joinPath(opfPath, href));
 		}
-		// On garde la place des entrées introuvables : l'index du chapitre dans
-		// la CFI de l'annotation compte TOUTES les entrées du spine.
+		// Retain placeholders for missing entries: the chapter index in an
+		// annotation CFI counts every spine entry.
 		for (let ref of odoc.getElementsByTagNameNS("*", "itemref")) {
 			book.spine.push(idToHref.get(ref.getAttribute("idref")) || null);
 		}
@@ -3271,15 +3501,15 @@ async handleResearchMetadata(id) {
 		return doc;
 	},
 
-	// Le surlignage d'un EPUB ne garde que le texte et une CFI. On repère le
-	// texte en ignorant les blancs, qui diffèrent entre le fichier et ce que
-	// le lecteur a enregistré.
+	// EPUB highlights store text and a CFI. Locate the text while ignoring
+	// whitespace differences between the archive and the reader's saved
+	// annotation text.
 	_squeeze(s) {
 		return String(s || "").replace(/[\s\u00ad\u200b-\u200d\u2060\ufeff]+/g, "");
 	},
 
-	// Texte compact du document et, pour chaque nœud texte, sa position de
-	// départ dans ce texte.
+	// Build compact document text and record each text node's starting
+	// offset within it.
 	_textIndex(doc) {
 		let flat = "", starts = new Map();
 		let walk = (node) => {
@@ -3304,8 +3534,8 @@ async handleResearchMetadata(id) {
 		if (needle.length < 8) return null;
 		let at = index.flat.indexOf(needle);
 		if (at >= 0) return { start: at, end: at + needle.length };
-		// Repli : le début et la fin du passage, si son milieu diffère un peu
-		// (guillemets ou ligatures normalisés par le lecteur).
+		// Fallback to passage beginnings and endings when the middle differs
+		// because the reader normalized quotes or ligatures.
 		let k = Math.min(60, Math.floor(needle.length / 3));
 		let head = needle.slice(0, k), tail = needle.slice(-k);
 		let s = index.flat.indexOf(head);
@@ -3317,8 +3547,8 @@ async handleResearchMetadata(id) {
 		return null;
 	},
 
-	// Texte d'un appel de note : chiffre, chiffre romain, lettre ou symbole,
-	// éventuellement entre crochets.
+	// A footnote call can be a number, Roman numeral, letter or symbol,
+	// The number may also be enclosed in brackets.
 	_NOTE_MARK: /^[[(]?\s*(\d{1,4}|[ivxlc]{1,6}|[a-z]|[*\u2020\u2021\u00a7\u00b6]{1,3})\s*[\])]?\.?$/i,
 
 	_semanticType(el) {
@@ -3340,9 +3570,9 @@ async handleResearchMetadata(id) {
 		return null;
 	},
 
-	// Liens d'appel de note situés dans le passage, ou accolés juste après
-	// lui : on arrête souvent la sélection sur le mot ou le point, et le
-	// numéro qui suit appartient bien au passage.
+	// Include footnote links inside or immediately following the passage:
+	// users often stop selection at a word or punctuation even though the
+	// following superscript citation belongs to that passage.
 	_noteCallsIn(doc, index, span) {
 		let out = [];
 		for (let a of doc.getElementsByTagNameNS("*", "a")) {
@@ -3386,16 +3616,16 @@ async handleResearchMetadata(id) {
 
 	_BLOCK: /^(p|div|li|aside|section|article|dd|dt|td|blockquote|footer|note)$/,
 
-	// Bloc qui porte la note : la cible du lien est souvent une ancre vide
-	// (« <a id="n4"/> ») posée au début du paragraphe de la note.
+	// Find the note's containing block; the link target is often an empty
+	// anchor at the start of its paragraph.
 	_noteBlock(el) {
 		let b = el;
 		while (b && b.nodeType === 1 && !this._BLOCK.test(String(b.localName || "").toLowerCase())) {
 			b = b.parentNode;
 		}
 		if (!b || b.nodeType !== 1) return null;
-		// Un bloc qui ne contient que le numéro (« <div class="numero">1.</div> »)
-		// n'est pas la note entière : on remonte d'un cran.
+		// A block containing only the note number is not the whole note;
+		// move up one level to find its content.
 		let p = b.parentNode;
 		if (this._squeeze(b.textContent).length < 6 && p && p.nodeType === 1
 			&& this._BLOCK.test(String(p.localName || "").toLowerCase())) {
@@ -3408,7 +3638,7 @@ async handleResearchMetadata(id) {
 		return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	},
 
-	// Texte de la note, sans son numéro de tête.
+	// Read note text without the leading number.
 	_noteText(block, label) {
 		let s = String(block.textContent || "").replace(/\s+/g, " ").trim();
 		if (label) {
@@ -3418,9 +3648,9 @@ async handleResearchMetadata(id) {
 		return s;
 	},
 
-	// La cible est-elle bien une note, et pas une page de l'index ni un renvoi
-	// interne ? Balisage sémantique d'abord, nom de la cible ensuite, et à
-	// défaut une note qui commence par le même numéro que l'appel.
+	// Verify that the target is a footnote rather than an index page or
+	// cross-reference. Prefer semantic markup, then the target name,
+	// then a note beginning with the same number as the citation call.
 	_looksLikeNote(call, el, block) {
 		if (/noteref/.test(this._semanticType(call.a))) return true;
 		for (let n = el, i = 0; n && n.nodeType === 1 && i < 4; n = n.parentNode, i++) {
@@ -3438,7 +3668,7 @@ async handleResearchMetadata(id) {
 	_IBID: /^(ibid|ibidem|idem|id)\b\.?/i,
 	_OPCIT: /\b(op|art|loc)\.?\s*cit\b/i,
 
-	// Notes qui précèdent celle-ci, de la plus proche à la plus lointaine.
+	// Previous notes, ordered nearest first.
 	_previousNotes(block, max) {
 		let out = [];
 		for (let n = block.previousElementSibling; n && out.length < max; n = n.previousElementSibling) {
@@ -3454,10 +3684,10 @@ async handleResearchMetadata(id) {
 		return m ? m[1] : "";
 	},
 
-	// « Ibid. » et « op. cit. » ne nomment pas la source : on va la chercher
-	// dans une note antérieure. Ibid. renvoie à la note qui précède (en
-	// remontant une chaîne d'ibid.), op. cit. à la dernière note qui cite le
-	// même auteur avec une année.
+	// Ibid. and op. cit. do not name the source. Resolve them through
+	// earlier notes: Ibid. refers to the preceding note, following any
+	// Ibid. chain; op. cit. refers to the latest dated source by the
+	// same author.
 	_earlierSource(block, noteText) {
 		let ibid = this._IBID.test(noteText);
 		let opcit = !ibid && this._OPCIT.test(noteText);
@@ -3471,8 +3701,8 @@ async handleResearchMetadata(id) {
 			return null;
 		}
 
-		// Auteurs possibles : les mots à majuscule de la citation qui précède
-		// « op. cit. », hors formules d'introduction (« Cité in Duckworth A. »).
+		// Possible authors are capitalized words preceding op. cit., excluding
+		// introductory phrases such as quoted-in references.
 		let cut = noteText.search(this._OPCIT);
 		let segment = noteText.slice(0, cut).split(";").pop();
 		let names = (segment.match(/\p{Lu}[\p{L}'\u2019-]{2,}/gu) || [])
@@ -3494,11 +3724,11 @@ async handleResearchMetadata(id) {
 		return null;
 	},
 
-	// Une note cite-t-elle un ouvrage ? Une référence porte une année de
-	// parution, ou commence par un auteur sous sa forme bibliographique
-	// (« Rosenfeld M. J., … », « D. Riesman, … », éventuellement après
-	// « Cité in » ou « Voir »). Une remarque, une précision du traducteur ou
-	// un renvoi interne (« cf. infra ») n'a ni l'un ni l'autre.
+	// Check whether a note cites a publication with a year,
+	// publication year, or begins with an author in bibliographic form
+	// an author surname or initials,
+	// possibly following an introductory citation phrase; translator notes or
+	// an internal reference ("cf. infra") has neither.
 	_citesWork(note) {
 		let s = String(note || "").trim();
 		if (/^(n\.\s?d\.\s?[teé]\.?|note d[eu'\u2019]|en (fran[cç]ais|anglais|allemand|italien|espagnol|latin|grec)\b)/i.test(s)) {
@@ -3509,7 +3739,7 @@ async handleResearchMetadata(id) {
 		return /^(\p{Lu}[\p{L}'\u2019-]{2,},?\s+(\p{Lu}\.\s*-?){1,3}[,\s]|(\p{Lu}\.\s*-?){1,3}\s*\p{Lu}[\p{L}'\u2019-]{2,}\s*[,(])/u.test(lead);
 	},
 
-	// Notes appelées dans un passage surligné d'un EPUB : [{ marker, entry }].
+	// Resolve cited EPUB footnotes to [{ marker, entry }].
 	async getEPUBFootnoteReferences(item, text) {
 		try {
 			let att = item.parentItem;
@@ -3517,8 +3747,8 @@ async handleResearchMetadata(id) {
 			let book = await this._openEPUB(att);
 			if (!book || !book.spine.length) return [];
 
-			// Chapitre visé par la CFI (« epubcfi(/6/18!… » = 9e entrée du spine),
-			// puis tous les autres si le passage n'y est pas.
+			// Try the chapter selected by the CFI first; a spine position such as
+			// /6/18 identifies entry nine. Search other chapters if necessary.
 			let pos = item.annotationPosition;
 			if (typeof pos === "string") pos = JSON.parse(pos);
 			let m = String((pos && pos.value) || "").match(/^epubcfi\(\/6\/(\d+)/);
@@ -3537,7 +3767,7 @@ async handleResearchMetadata(id) {
 				if (sp) { doc = d; entry = e; index = ix; span = sp; break; }
 			}
 			if (!doc) {
-				log("EPUB : passage introuvable dans le livre, notes ignorées");
+				log("EPUB passage not found; footnotes skipped");
 				return [];
 			}
 
@@ -3557,13 +3787,13 @@ async handleResearchMetadata(id) {
 				if (note.length < 3) continue;
 				let earlier = this._earlierSource(block, note);
 
-				// Beaucoup de livres mêlent dans leurs notes les références et les
-				// remarques de l'auteur (« Je reviendrai plus loin sur cette
-				// question. Cf. infra… »). Une remarque ne cite aucun ouvrage :
-				// transmise, elle poussait le modèle à citer le livre lu lui-même.
-				// Sans année ni note antérieure qui nomme la source, on l'écarte.
+				// Books often mix citations with author remarks in their footnotes.
+				// A remark referring to later discussion may cite no publication;
+				// passing it as a source led the model to cite the current book.
+				// Exclude such remarks unless a year or an earlier resolved note
+				// identifies the source.
 				if (!earlier && !this._citesWork(note)) {
-					log("EPUB : note " + call.label + " sans ouvrage cité (remarque), écartée");
+					log("EPUB : note " + call.label + " has no cited publication; remark excluded");
 					continue;
 				}
 				out.push({ marker: "[note " + call.label + "]", entry: this._trimEntry(note, 600) });
@@ -3576,7 +3806,7 @@ async handleResearchMetadata(id) {
 					});
 				}
 			}
-			if (out.length) log("EPUB : notes résolues par lien : " + out.length);
+			if (out.length) log("EPUB footnotes resolved through links: " + out.length);
 			return out;
 		}
 		catch (e) {
@@ -3585,17 +3815,17 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// Socle commun : liens internes du PDF d'abord (déterministe, même principe
-	// que le popup de Zotero), analyse du texte en repli.
-	// Renvoie [{ marker, entry }] — le prompt et l'index partagent ce résultat.
+	// Shared resolution: deterministic PDF internal links first,
+	// then textual bibliography matching as a fallback.
+	// Return [{ marker, entry }] for both the prompt and bibliography index.
 	async collectReferencesStructured(item, text) {
 		if (!getPref("resolveCitations", true)) return [];
 		try {
 			let max = parseInt(getPref("maxRefs", 8), 10) || 8;
 
-			// EPUB : la source passe le plus souvent par une note de bas de
-			// page, dont l'appel est un simple numéro en exposant que la
-			// détection textuelle ci-dessous ne reconnaît pas.
+			// EPUB citations usually use superscript footnote numbers that the
+			// text-based citation detector below does not recognize,
+			// so use the EPUB footnote path first.
 			if (this.isEPUBAttachment(item.parentItem)) {
 				let notes = await this.getEPUBFootnoteReferences(item, text);
 				if (notes.length) return notes.slice(0, max);
@@ -3603,20 +3833,20 @@ async handleResearchMetadata(id) {
 
 			let markers = this.detectCitationMarkers(text);
 
-			// Aucun appel de citation dans le passage : il n'y a rien à résoudre.
-			// Ce contrôle purement textuel est immédiat, alors que la suite ouvre
-			// le PDF et parcourt ses liens — plusieurs secondes sur un gros
-			// document. La grande majorité des passages ne cite personne.
+			// Without a citation call there is nothing to resolve.
+			// This cheap textual check avoids opening the PDF and traversing
+			// its links, which can take seconds for a large document.
+			// Most highlighted passages contain no citations.
 			if (!markers.numbers.length && !markers.authorYears.length) {
-				log("aucun appel de citation dans le passage : références ignorées");
+				log("No citation calls; reference resolution skipped");
 				return [];
 			}
 
-			// 1. Voie sûre : suivre les liens du PDF.
+			// First, follow reliable internal PDF links.
 			let linked = await this.getLinkedReferences(item);
 			if (linked.length) {
-				// Si le nombre d'appels numériques correspond exactement, les
-				// apparier dans l'ordre pour conserver « [1] », « [2] ».
+				// When the numeric citation counts match exactly, pair their
+				// results in order to preserve the original numeric markers.
 				let nums = markers.numbers;
 				let pair = (nums.length === linked.length);
 				return linked.slice(0, max).map((entry, i) => ({
@@ -3625,7 +3855,7 @@ async handleResearchMetadata(id) {
 				}));
 			}
 
-			// 2. Repli : chercher les appels détectés dans la bibliographie.
+			// Fallback: look up detected calls in the bibliography.
 			let fullText = await this.getAttachmentFullText(item);
 			if (!fullText) return [];
 			let bib = this.findBibliographySection(fullText);
@@ -3641,21 +3871,21 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// Version texte, transmise à l'IA via {{references}}.
+	// Text version supplied through {{references}}.
 	async getReferences(item, text) {
 		let refs = await this.collectReferencesStructured(item, text);
 		return refs.map(r => r.marker ? r.marker + " " + r.entry : r.entry).join("\n");
 	},
 
-	// Bloc de contexte lisible, transmis à l'IA en mode standard.
+	// Readable context block sent in standard mode.
 	formatContextBlock(vars) {
 		let lines = [];
 		if (vars.title) lines.push("Title: " + vars.title);
 		if (vars.authors) lines.push("Authors: " + vars.authors);
 		if (vars.year) lines.push("Year: " + vars.year);
 		if (vars.publication) lines.push("Publication: " + vars.publication);
-		// Libellé explicite : présentée seule, cette page était recopiée par le
-		// modèle comme page citée dans le champ référence.
+		// Label the page explicitly so the model does not confuse the
+		// highlight page with a page cited in a reference field.
 		if (vars.page) {
 			lines.push("Passage page: " + vars.page + " (where the passage sits in the"
 				+ " document being read; never a cited page, never use it in a reference)");
@@ -3663,8 +3893,8 @@ async handleResearchMetadata(id) {
 		if (vars.abstract) lines.push("Document abstract: " + vars.abstract);
 		let block = lines.length ? "Document context:\n" + lines.join("\n") : "";
 		if (vars.references) {
-			// Notes de bas de page (EPUB) : l'appel est un numéro collé au texte,
-			// que le modèle ne reconnaîtrait pas seul comme une citation.
+			// EPUB footnote calls can be attached directly to passage text;
+			// without context the model may not recognize them as citations.
 			let header = /^\[note /m.test(vars.references)
 				? "Works cited in the passage, through footnotes. A footnote call is a"
 					+ " number glued to a word or punctuation mark of the passage"
@@ -3680,19 +3910,19 @@ async handleResearchMetadata(id) {
 		return block;
 	},
 
-	// Remplace {{variable}} par sa valeur (chaîne vide si inconnue).
+	// Substitute {{variable}} with its value, or empty text if unknown.
 	substitute(tpl, vars) {
 		return String(tpl).replace(/\{\{\s*(\w+)\s*\}\}/g, (m, key) =>
 			(Object.prototype.hasOwnProperty.call(vars, key) && vars[key] != null)
 				? String(vars[key]) : "");
 	},
 
-	// Construit le prompt à envoyer : { system, user }.
-	// - Mode avancé (le prompt contient {{text}} ou {{comment}}) : tout est mis
-	//   dans le message utilisateur, l'utilisateur contrôle la structure.
-	// - Mode standard : le prompt sert d'instructions (system), le passage (et
-	//   le contexte du document si activé) est ajouté comme message utilisateur.
-	// Variables disponibles dans le prompt ET dans le gabarit de sortie.
+	// Build provider messages: { system, user }.
+	// Advanced mode: when the prompt contains {{text}} or {{comment}}, put
+	// everything in the user message so its structure remains user controlled.
+	// Standard mode: the prompt supplies system instructions; the passage
+	// and optional document context are added in the user message.
+	// Variables are available in prompts and output templates.
 	buildVars({ text, ctx, comment, fields }) {
 		let vars = {
 			text: text || "",
@@ -3707,7 +3937,7 @@ async handleResearchMetadata(id) {
 			maxWords: parseInt(getPref("maxWords", 80), 10) || 80,
 			language: String(getPref("language", "français")).trim() || "français"
 		};
-		// Champs saisis à la main : n'écrasent jamais une variable intégrée.
+		// Manual fields never overwrite built-in variables.
 		if (fields) {
 			for (let k of Object.keys(fields)) {
 				if (!this.RESERVED_VARS.includes(k)) vars[k] = fields[k];
@@ -3740,10 +3970,10 @@ async handleResearchMetadata(id) {
 		return { system: this.substitute(tpl, vars), user: parts.join("\n\n") };
 	},
 
-	// Consigne ajoutée au prompt de la couleur pour que la réponse épouse
-	// EXACTEMENT les champs déclarés : le modèle ne rédige pas un commentaire
-	// libre, il renseigne les champs restés vides, un par ligne. C'est ce qui
-	// rend le prompt dépendant des champs définis plus haut.
+	// Append instructions requiring exactly the declared fields.
+	// The model fills only missing requested values, one per line,
+	// rather than producing unconstrained free-form output. This is
+	// the connection between prompt behavior and configured fields.
 	buildFieldInstruction(toFill, schema, values) {
 		let lines = [
 			"",
@@ -3761,8 +3991,8 @@ async handleResearchMetadata(id) {
 			else if (f.type === "textarea") d += " — may span several lines";
 			lines.push(d);
 		}
-		// Ce que l'utilisateur a déjà écrit sert de contexte, jamais de cible :
-		// sa saisie ne doit pas être réécrite.
+		// Existing user values are context only, never rewrite targets.
+		// Do not replace manually entered content.
 		let given = schema.filter(f => !toFill.includes(f)
 			&& String((values && values[f.name]) || "").trim());
 		if (given.length) {
@@ -3775,8 +4005,8 @@ async handleResearchMetadata(id) {
 		return lines.join("\n");
 	},
 
-	// Variante JSON de la consigne : mêmes règles, format imposé par le
-	// fournisseur plutôt que demandé en toutes lettres.
+	// JSON variant of the same instructions; the provider enforces
+	// the response format instead of relying on prose alone.
 	buildFieldInstructionJSON(toFill, schema, values) {
 		let lines = [
 			"",
@@ -3805,14 +4035,14 @@ async handleResearchMetadata(id) {
 		return lines.join("\n");
 	},
 
-	// Relit une réponse JSON. Renvoie null si ce n'en est pas — l'appelant
-	// retombe alors sur parseFieldReply, qui n'exige aucun format.
+	// Parse a JSON response; return null if it is not JSON so the caller
+	// fall back to parseFieldReply, which does not require structured JSON.
 	parseJSONReply(reply, toFill) {
 		let raw = String(reply || "").trim();
-		// Les modèles enrobent volontiers leur JSON dans un bloc de code.
+		// Models often wrap JSON in a fenced code block.
 		let fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
 		if (fence) raw = fence[1].trim();
-		// … ou l'accompagnent d'une phrase : on isole le premier objet complet.
+		// Or add prose around it; isolate the first complete object.
 		let first = raw.indexOf("{"), last = raw.lastIndexOf("}");
 		if (first === -1 || last <= first) return null;
 		raw = raw.slice(first, last + 1);
@@ -3826,13 +4056,13 @@ async handleResearchMetadata(id) {
 		for (let f of toFill) byName[f.name] = f;
 		let out = {}, seen = 0;
 		for (let k of Object.keys(obj)) {
-			if (!byName[k]) continue;              // clé inventée : ignorée
+			if (!byName[k]) continue;              // Ignore invented keys.
 			let v = obj[k];
 			if (v === null || v === undefined) v = "";
 			if (typeof v === "boolean") v = v ? "true" : "";
 			else if (Array.isArray(v)) v = v.filter(x => x != null).join(", ");
 			else if (typeof v === "object") continue;
-			// Le JSON n'est pas passé par sanitize : le Markdown y survit.
+			// JSON has not passed through sanitize, so Markdown remains intact.
 			v = this.unwrapWholeTag(this.demarkdown(String(v)).trim());
 			if (byName[k].type === "check") v = /^(true|yes|oui|1|x)$/i.test(v) ? "true" : "";
 			out[k] = v;
@@ -3841,9 +4071,9 @@ async handleResearchMetadata(id) {
 		return seen ? out : null;
 	},
 
-	// Relit une réponse « nom: valeur ». Tolère les puces, le gras Markdown et
-	// les valeurs sur plusieurs lignes (une ligne sans marqueur prolonge le
-	// champ courant). Seuls les champs demandés sont retenus.
+	// Read name: value output, tolerating bullets, Markdown emphasis and
+	// multi-line values. A line without a field marker continues the
+	// current value. Retain only requested fields.
 	parseFieldReply(reply, toFill) {
 		let names = toFill.map(f => f.name);
 		let byName = {};
@@ -3862,8 +4092,8 @@ async handleResearchMetadata(id) {
 			}
 		}
 
-		// Un seul champ demandé et aucun marqueur reconnu : toute la réponse
-		// lui revient, plutôt que de perdre une réponse parfaitement utilisable.
+		// If exactly one field was requested and no marker matched, use the
+		// whole response rather than discard usable output.
 		if (!Object.keys(out).length && names.length === 1) {
 			out[names[0]] = String(reply || "").trim();
 		}
@@ -3879,41 +4109,41 @@ async handleResearchMetadata(id) {
 		return out;
 	},
 
-	// Une clé absente ou refusée ne se répare pas en réessayant : inutile de
-	// faire attendre trois fois pour la même réponse.
+	// A missing or rejected credential will not improve through retries;
+	// do not make the user wait for the same failure three times.
 	_worthRetrying(e) {
-		// Clé absente ou refusée, modèle inexistant, requête invalide : la
-		// réponse sera identique au second essai.
+		// Missing/rejected keys, absent models and invalid requests return
+		// the same result on another attempt.
 		let st = (e && typeof e.status === "number") ? e.status : 0;
 		if ([400, 401, 403, 404].includes(st)) return false;
-		// Fournisseurs sans statut (CLI, Apple) : il ne reste que le libellé.
+		// CLI and Apple errors have no HTTP status, so inspect their message.
 		let m = String((e && e.message) || e || "");
 		return !/api key|unauthorized|forbidden|not found|introuvable/i.test(m);
 	},
 
-	// Les fournisseurs HTTP acceptent response_format ; le CLI et Apple n'ont
-	// pas d'équivalent, on y reste sur la lecture « nom: valeur ».
+	// HTTP providers accept response_format; CLI and Apple do not,
+	// so keep name: value parsing for those providers.
 	supportsJSON() {
 		let p = this.provider();
 		return (p === "openai" || p === "ollama") && getPref("structuredOutput", true);
 	},
 
-	async generateComment({ text, ctx, color, comment, fields, promptOverride, json }) {
+	async generateComment({ text, ctx, color, comment, fields, promptOverride, json, raw, safeRetry }) {
 		let prompt = this.buildPrompt({ text, ctx, color, comment, fields, promptOverride });
-		return this.complete(prompt, { json: !!json });
+		return this.complete(prompt, { json: !!json, raw: !!raw, safeRetry: !!safeRetry });
 	},
 
-	// Appel générique à un fournisseur, avec reprise. Options :
-	//   provider  impose un fournisseur (sinon celui des réglages)
-	//   json      demande une sortie structurée (HTTP seulement)
-	//   raw       rend le texte tel quel, sans conversion du Markdown : la
+	// Shared provider call with retry policy. Options:
+	// provider overrides the configured provider.
+	// json requests structured output from HTTP providers only.
+	// raw returns response text without Markdown conversion; the
 	//             discussion fait son propre rendu
-	//   timeout   délai en ms (les longs contextes de la discussion en ont besoin)
-	//   model     impose un modèle (la discussion peut en employer un autre)
-	//   cancel    jeton de makeCancelToken() : le bouton « Stop » de la discussion
-	// Le prompt peut porter, outre { system, user }, un `context` (document,
-	// sources) et un `history` ([{ role, content }]) : la discussion s'en sert,
-	// les annotations non.
+	// timeout is milliseconds, including longer Chat contexts.
+	// model can override the annotation model for Chat.
+	// cancel is a makeCancelToken token used by Chat's Stop action.
+	// Besides system/user, prompts can include document context and
+	// sources) and a `history` ([{ role, content }]), used by Chat,
+	// annotation calls do not include conversation history.
 	async complete(prompt, opts = {}) {
 		let p = this.provider(opts.provider);
 		let call = () => {
@@ -3922,9 +4152,10 @@ async handleResearchMetadata(id) {
 			return this.callOpenAI(prompt, Object.assign({}, opts, { provider: p }));
 		};
 
-		// Une coupure réseau ou un modèle qui bafouille ne doivent pas coûter
-		// l'annotation : on retente avant de renoncer.
+		// Recoverable network or model-output failures should not lose an
+		// annotation; retry only under the shared safe retry policy.
 		let tries = parseInt(getPref("retries", 1), 10);
+		if (opts.safeRetry) tries = 0; // Persistent jobs own retries; never repeat an ambiguous paid call here.
 		if (isNaN(tries) || tries < 0) tries = 1;
 		let last;
 		let stopped = () => !!(opts.cancel && opts.cancel.cancelled);
@@ -3932,23 +4163,23 @@ async handleResearchMetadata(id) {
 			try { return await call(); }
 			catch (e) {
 				last = e;
-				// Arrêt demandé : ni nouvel essai, ni message d'erreur du
-				// fournisseur (un process tué n'a rien d'une panne).
+				// Cancellation means no new attempt and no provider-failure message:
+				// an intentionally terminated process is not a provider outage.
 				if (stopped()) {
 					let err = new Error("Stopped");
 					err.cancelled = true;
 					throw err;
 				}
 				if (i === tries || !this._worthRetrying(e)) break;
-				log("échec de génération, nouvel essai (" + (i + 1) + "/" + tries + ") : " + e);
+				log("Generation failed; retrying (" + (i + 1) + "/" + tries + ") : " + e);
 			}
 		}
 		throw last;
 	},
 
-	// Jeton d'annulation : cancel() exécute les rappels enregistrés (tuer le
-	// process, abandonner la requête HTTP). Un rappel enregistré après coup
-	// s'exécute aussitôt.
+	// Cancellation runs registered callbacks to terminate a process or
+	// abort HTTP. Callbacks registered after cancellation run
+	// immediately.
 	makeCancelToken() {
 		return {
 			cancelled: false,
@@ -3966,9 +4197,9 @@ async handleResearchMetadata(id) {
 		};
 	},
 
-	// Fournisseurs sans notion de messages (CLI, Apple) : le contexte et
-	// l'historique de la discussion précèdent la question dans l'entrée
-	// standard. Pour une annotation, il ne reste que `user`, inchangé.
+	// For CLI and Apple, which lack message roles, place context and
+	// conversation history before the question in standard input.
+	// For annotations, user remains unchanged.
 	flattenPrompt({ user, context, history }) {
 		let turns = Array.isArray(history) ? history : [];
 		if (!context && !turns.length) return user;
@@ -3983,9 +4214,9 @@ async handleResearchMetadata(id) {
 		return parts.join("\n\n---\n\n");
 	},
 
-	// Rend le gabarit de sortie. Une ligne dont TOUTES les variables sont vides
-	// est supprimée : sans cela, une référence non résolue laisserait une ligne
-	// orpheline du type « <i></i> » dans le commentaire.
+	// Render the output template. Remove a line when every variable is
+	// empty so unresolved references do not leave empty formatting-only
+	// lines in generated output.
 	renderTemplate(tpl, vars) {
 		let out = [];
 		for (let line of String(tpl).split("\n")) {
@@ -4001,11 +4232,11 @@ async handleResearchMetadata(id) {
 		return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 	},
 
-	// Retire d'une liste de citations « (A, 1999 ; B, 2001) » celles qui
-	// désignent le document lu (son premier auteur et son année) : quand le
-	// passage ne cite rien d'identifiable, le modèle se rabat parfois sur
-	// « (Lahire, 2026) » en lisant un livre de Lahire paru en 2026. Seule une
-	// valeur faite uniquement de citations est touchée.
+	// Remove citations identifying the current document by its first
+	// author and year. When no secondary source can be resolved, a model
+	// may otherwise cite the book being read. Only change values made
+	// entirely of citations; leave mixed authored text untouched.
+	// Do not rewrite a field containing other meaningful text.
 	stripSelfCitations(value, ctx) {
 		let s = String(value || "");
 		let year = ctx && String(ctx.year || "");
@@ -4023,15 +4254,193 @@ async handleResearchMetadata(id) {
 			return who !== norm(first).split(/\s+/)[0];
 		});
 		if (kept.length === parts.length) return s;
-		log("citation du document lu retirée : " + s.trim());
+		log("Removed citation of current document: " + s.trim());
 		return kept.length ? "(" + kept.join(" ; ") + ")" : "";
 	},
 
-	// Produit le commentaire final d'une annotation : réponse de l'IA seule, ou
-	// gabarit mêlant cette réponse ({{ai}}) et des entrées déterministes.
-	// Renvoie null si la couleur n'a rien à produire.
-	// out (facultatif) reçoit les valeurs finales des champs et les références
-	// résolues : la carte d'annotation du lecteur les réaffiche (card-fields.js).
+	// Build the historical structured-output result from the response or
+	// from a template mixing {{ai}} with deterministic values.
+	// Return null when the color has nothing to produce.
+	// Optional out receives final field values and resolved references;
+	// the reader card uses them through card-fields.js.
+	normalizeAIFieldValue(field, value) {
+		const raw = String(value ?? "");
+		const names = [...new Set([field?.name, field?.label].filter(Boolean))]
+			.map(name => String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+		if (!names) return raw;
+		// Strip one exact leading label, never a similar scientific heading or
+		// an introductory sentence. Retain the surrounding paragraph and body.
+		const label = "(?:" + names + ")";
+		const patterns = [
+			label + "\\s*:",
+			"(?:\\*\\*|__)" + label + "\\s*:(?:\\*\\*|__)",
+			"(?:\\*\\*|__)" + label + "(?:\\*\\*|__)\\s*:",
+			"<(?:b|strong)>" + label + "\\s*:</(?:b|strong)>",
+			"<(?:b|strong)>" + label + "</(?:b|strong)>\\s*:",
+			"#{1,6}[ \\t]+" + label + "[ \\t]*:?[ \\t]*(?:\\r?\\n|$)"
+		];
+		const prefix = new RegExp("^(\\s*<p>\\s*)?\\s*(?:" + patterns.join("|") + ")[ \\t]*(?:\\r?\\n)?", "i");
+		return raw.replace(prefix, (_, paragraph) => paragraph || "");
+	},
+
+	aiFieldHTML(field, value) {
+		// Escape first. Only restore an exact, attribute-free formatting allowlist.
+		let text = this.normalizeAIFieldValue(field, value);
+		text = text.replace(/&(amp|lt|gt|quot|apos|#39|nbsp);/g, (_, entity) =>
+			({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", "#39": "'", nbsp: " " })[entity]);
+		text = text.replace(/<\/(?:p|div)>\s*<(?:p|div)>/gi, "\n\n")
+			.replace(/<(?:p|div)>|<\/(?:p|div)>/gi, "")
+			.replace(/<h[1-6]>([\s\S]*?)<\/h[1-6]>/gi, "<strong>$1</strong>\n");
+		text = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+			.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+		text = text.replace(/&lt;(\/?(?:b|strong|i|em|u|sub|sup|code))&gt;/gi, "<$1>")
+			.replace(/&lt;br\s*\/?&gt;/gi, "<br/>");
+		// Preserve meaningful headings, paragraphs and inline emphasis. Do not
+		// alter underscores within names, equations or code spans.
+		const code = [];
+		text = text.replace(/<code>[\s\S]*?<\/code>|`[^`\n]+`/g, match => {
+			code.push(match.startsWith("`") ? "<code>" + match.slice(1, -1) + "</code>" : match);
+			return "\u0000" + (code.length - 1) + "\u0000";
+		});
+		text = text.replace(/^#{1,6}\s+(.+)$/gm, "<strong>$1</strong>")
+			.replace(/\*\*(?=\S)([^*\n]*?\S)\*\*/g, "<strong>$1</strong>")
+			.replace(/(^|[^\w*])\*(?=\S)([^*\n]*?\S)\*(?!\*)/g, "$1<em>$2</em>")
+			.replace(/\u0000(\d+)\u0000/g, (_, index) => code[Number(index)])
+			.replace(/\r?\n/g, "<br/>");
+		return text;
+	},
+
+	renderAIField(element, field, value, item) {
+		if (Array.isArray(value)) value = this.fieldDisplayValue(field, value);
+		if (!String(value || "").trim()) {
+			element.textContent = AnnotaCardFields.fieldState(item, field).running ? "Generating..." : "Not generated yet";
+			return;
+		}
+		const html = this.aiFieldHTML(field, value);
+		element.replaceChildren();
+		const stack = [element], doc = element.ownerDocument;
+		for (const part of html.split(/(<\/?(?:b|strong|i|em|u|sub|sup|code)>|<br\s*\/?>)/gi)) {
+			if (!part) continue;
+			const tag = part.match(/^<(\/?)(b|strong|i|em|u|sub|sup|code)>$/i);
+			if (/^<br\s*\/?>$/i.test(part)) stack[stack.length - 1].appendChild(doc.createElement("br"));
+			else if (tag) {
+				if (tag[1]) { if (stack.length > 1) stack.pop(); }
+				else {
+					const child = doc.createElement(tag[2].toLowerCase());
+					stack[stack.length - 1].appendChild(child); stack.push(child);
+				}
+			}
+			else stack[stack.length - 1].appendChild(doc.createTextNode(AnnotaCardFields.plain(part)));
+		}
+	},
+
+	async generateStructuredFields(item, { fieldId, fieldIds, partial = false, regenerate = false, control } = {}) {
+        const card = AnnotaCardFields;
+        const infrastructure = typeof AnnotaInfrastructure !== "undefined" ? AnnotaInfrastructure : null;
+        if (infrastructure?.stopping) throw Error("Extension is shutting down");
+        if (card?._maintenance) throw new Error("Finish importing before generating AI fields.");
+		if (item.library?.editable === false) throw new Error("Annotation is read-only.");
+		const identity = this.keyForItem(item), key = item.libraryID + "/" + item.key + "/" + identity;
+		if (!this._structuredGeneration) this._structuredGeneration = new Set();
+		if (!this._fieldRequests) this._fieldRequests = new Set();
+		if (!fieldId && this._structuredGeneration.has(key)) throw new Error("AI generation is already running for this annotation.");
+		if (!fieldId) this._structuredGeneration.add(key);
+		const stateItem = { libraryID: item.libraryID, key: item.key, annotationColor: item.annotationColor, annotationType: item.annotationType };
+		let targets = [], acquired = [], previous, generated = {}, metadata = {};
+		card.setGenerationState(stateItem, { running: true });
+		try {
+			await card.load();
+			previous = card.get(item) || { values: {}, references: "" };
+			const values = Object.assign({}, previous.values);
+			targets = this.annotationFields(identity).filter(f => f.type === "ai" && (!fieldId || f.id === fieldId)
+                && (!fieldIds || fieldIds.includes(f.id)) && (regenerate || !String(values[f.name] || "").trim()));
+			for (const field of targets) {
+				const requestKey = card.fieldStateKey(stateItem, field);
+				if (this._fieldRequests.has(requestKey)) throw new Error("AI generation is already running for this field.");
+				this._fieldRequests.add(requestKey); acquired.push(requestKey);
+				card.setFieldState(stateItem, field, { running: true });
+			}
+			const notReady = this.providerReadyError(); if (targets.length && notReady) throw new Error(notReady);
+			const text = item.annotationType === "image" ? await this.areaText(item) : String(item.annotationText || "").trim();
+			const sourceFingerprint = infrastructure?.lifecycle.source(item, text);
+			const ctx = this.getContext(item);
+			ctx.references = previous.references || (targets.length ? await this.getReferences(item, text) : "");
+			const errors = [], failures = [];
+			for (const field of targets) {
+				try {
+                    control?.check();
+					if (infrastructure) await infrastructure.lifecycle.transition(item, field, "queued");
+					if (this._deletedAnnotationKeys?.has(item.libraryID + ":" + item.key)) throw new Error("Annotation is unavailable.");
+					if (!field.prompt.trim()) throw new Error("No AI instruction configured for " + field.label);
+					const promptValues = Object.assign({}, values);
+					for (const f of this.annotationFields(identity).filter(f => f.type === "multiselect")) {
+						promptValues[f.name] = this.categoryLabels(f, values[f.name]).join(", ");
+					}
+                    if (infrastructure) await infrastructure.lifecycle.transition(item, field, "generating");
+					const reply = await this.generateComment({ text, ctx, color: identity, comment: "", fields: promptValues, raw: true, safeRetry: !!infrastructure,
+						promptOverride: field.prompt + "\n\nReturn only the requested field content. Do not repeat the field name or label ("
+							+ field.name + ", " + field.label + "), introductory phrases, or an unnecessary title. Preserve useful paragraphs, meaningful scientific headings, notation and formatting." });
+					const value = this.normalizeAIFieldValue(field, reply);
+                    control?.check();
+                    if (infrastructure?.stopping) { const stopped = Error("Generation interrupted during shutdown"); stopped.stopped = true; throw stopped; }
+					if (!card.plain(value).trim()) throw new Error("AI returned no value for " + field.label);
+					const fresh = await Zotero.Items.getAsync(item.id);
+					if (!fresh?.isAnnotation?.() || fresh.deleted || this._deletedAnnotationKeys?.has(item.libraryID + ":" + item.key)
+						|| (field.scope !== "global" && this.keyForItem(fresh) !== identity) || fresh.library?.editable === false) {
+						throw new Error("Annotation changed or became unavailable during generation. Please retry.");
+					}
+                    const currentField = this.annotationFields(this.keyForItem(fresh)).find(f => f.id === field.id);
+                    if (!currentField || currentField.type !== "ai" || currentField.prompt !== field.prompt) throw Error("AI field configuration changed during generation; result was not saved.");
+					generated[field.name] = values[field.name] = value;
+					metadata[field.id] = { fieldId: field.id, scope: field.scope, prompt: field.prompt,
+						promptFingerprint: this.fieldFingerprint(field.prompt), generatedAt: new Date().toISOString(),
+                        state: "completed", sourceFingerprint: sourceFingerprint || this.fieldFingerprint(text),
+                        annotation: infrastructure ? infrastructure.stableAnnotation(item) : undefined,
+                        provider: String(getPref("provider", "")), model: String(getPref("model", "")) };
+					if (partial) {
+						await card.saveValues(fresh, { [field.name]: value }, ctx.references, previous.values, { [field.id]: metadata[field.id] });
+                        if (infrastructure && card.get(fresh)?.values[field.name] !== value) await infrastructure.lifecycle.transition(fresh, field, "completed", { discardedConcurrentResult: true });
+                        await control?.completeField?.(field.id);
+						card.setFieldState(stateItem, field, { saved: true });
+					}
+				}
+				catch (error) {
+                    if (infrastructure && !infrastructure.stopping && !item.deleted && !this._deletedAnnotationKeys?.has(item.libraryID + ":" + item.key)) {
+                        await infrastructure.lifecycle.transition(item, field, error.stopped ? "cancelled" : "failed", { error: String(error.message || error), failedAt: new Date().toISOString() });
+                    }
+					card.setFieldState(stateItem, field, { error: error.message || String(error) });
+					errors.push(field.label + ": " + (error.message || error));
+                    failures.push(error);
+					if (!partial || error.stopped) throw error;
+				}
+			}
+			const fresh = await Zotero.Items.getAsync(item.id);
+			if (!partial && Object.keys(generated).length) await card.saveValues(fresh, generated, ctx.references, previous.values, metadata);
+			try { if (fresh?.isAnnotation?.() && !fresh.deleted) await this._syncPaperResearchNote(fresh); }
+			catch (error) { throw new Error("Fields saved, but the research note could not be refreshed: " + (error.message || error)); }
+			if (errors.length) {
+                const error = new Error(errors.join("; "));
+                if (failures.every(failure => failure.status === 429 && failure.requestRejected)) Object.assign(error, { status: 429, requestRejected: true, retryable: true, retryAfter: Math.max(...failures.map(failure => Number(failure.retryAfter) || 1)) });
+                throw error;
+            }
+			for (const field of targets) card.setFieldState(stateItem, field, { saved: true });
+			card.setGenerationState(stateItem, { saved: true });
+			return card.get(item) || previous;
+		}
+		catch (error) {
+			for (const field of targets) {
+				if (!acquired.includes(card.fieldStateKey(stateItem, field))) continue;
+				if (!partial || card.fieldState(stateItem, field).running) {
+					if (infrastructure && !infrastructure.stopping && card.fieldState(stateItem, field).running) await infrastructure.lifecycle.transition(item,field,error.stopped ? "cancelled" : "failed",{error:String(error.message || error),failedAt:new Date().toISOString()});
+					card.setFieldState(stateItem, field, { error: error.message || String(error) });
+				}
+			}
+			if (acquired.length || !targets.length) card.setGenerationState(stateItem, { error: this.t("gen.failed", { msg: error.message || error }) });
+			throw error;
+		}
+		finally { for (const request of acquired) this._fieldRequests.delete(request); if (!fieldId) this._structuredGeneration.delete(key); }
+	},
+
 	async buildComment({ text, ctx, color, comment, fields, getRefs, out }) {
 		let entry = this.getColorEntry(color);
 		if (!entry) return null;
@@ -4040,10 +4449,10 @@ async handleResearchMetadata(id) {
 		let schema = this.parseFieldSchema(entry.fields);
 		let values = Object.assign({}, fields || {});
 
-		// 0. Références citées : leur résolution ouvre le PDF et parcourt ses
-		//    liens internes, soit plusieurs secondes sur un gros document. On ne
-		//    la déclenche donc que si quelque chose s'en sert réellement — un
-		//    commentaire monté à la main n'a rien à attendre.
+		// Reference resolution can open the PDF and traverse internal links,
+		// taking seconds for a large file. Resolve only when a configured
+		// field or output actually uses references; a fully manual output
+		// does not need this work.
 		let t0 = Date.now(), tRefs = 0, tAI = 0;
 		if (getRefs && !ctx.references) {
 			let tplWantsRefs = /\{\{\s*references\s*\}\}/.test(this.effectiveTemplate(entry));
@@ -4055,9 +4464,9 @@ async handleResearchMetadata(id) {
 			}
 		}
 
-		// 1. Champs de type « ai » : chacun a sa propre consigne et ne concerne
-		//    que lui. Les champs saisis à la main sont déjà disponibles pour
-		//    servir de contexte à ces consignes.
+		// Each AI field has its own instructions and generates only itself.
+		// Manual values are already available as context for those
+		// instructions.
 		for (let f of schema) {
 			if (f.type !== "ai" || !f.prompt.trim()) continue;
 			if (String(values[f.name] || "").trim()) continue;
@@ -4069,16 +4478,16 @@ async handleResearchMetadata(id) {
 				tAI += Date.now() - t;
 			}
 			catch (e) {
-				log("champ IA « " + f.name + " » : " + e);
+				log("AI field \"" + f.name + " » : " + e);
 				values[f.name] = "";
 			}
 		}
 
-		// 2. Le prompt de la couleur renseigne les champs restés vides — et eux
-		//    seuls. C'est le lien entre les deux réglages : la réponse est
-		//    contrainte aux champs déclarés, pas un commentaire libre. Ce que
-		//    vous avez tapé à la main n'est jamais réécrit ; si vous avez tout
-		//    rempli, aucun appel n'est fait.
+		// Historical color prompts target missing fields only.
+		// The response is constrained to declared fields instead of free-form
+		// output. Manually typed values are never rewritten; a completed
+		// form does not trigger another field-filling request.
+		// completed fields do not require a request.
 		if (this.entryFillsFields(entry)) {
 			let toFill = this.fieldsToFill(schema, values);
 			if (toFill.length) {
@@ -4092,16 +4501,16 @@ async handleResearchMetadata(id) {
 							: this.buildFieldInstruction(toFill, schema, values))
 					});
 					tAI += Date.now() - t;
-					// Le JSON demandé n'est pas garanti : un petit modèle local
-					// répond parfois en texte. On relit alors comme avant plutôt
-					// que de perdre la réponse.
+					// Small local models may return text despite a JSON request;
+					// fallback to the historical parser rather than discard an
+					// otherwise usable response.
 					let parsed = json ? this.parseJSONReply(reply, toFill) : null;
 					if (!parsed) {
-						if (json) log("réponse non-JSON : relecture « nom: valeur »");
+						if (json) log("Non-JSON response; parsing name: value output");
 						parsed = this.parseFieldReply(reply, toFill);
 					}
-					// Faute de source, le modèle cite parfois le document lu
-					// lui-même : jamais une référence secondaire.
+					// Without a resolved source, models sometimes cite the document
+					// being read instead of an actual secondary reference.
 					for (let f of toFill) {
 						if (typeof parsed[f.name] === "string") {
 							parsed[f.name] = this.stripSelfCitations(parsed[f.name], ctx);
@@ -4110,26 +4519,26 @@ async handleResearchMetadata(id) {
 					Object.assign(values, parsed);
 				}
 				catch (e) {
-					log("remplissage des champs par l'IA : " + e);
+					log("AI field completion: " + e);
 					throw e;
 				}
 			}
 		}
 
-		// 3. Réponse d'IA pour le commentaire ENTIER : uniquement si la
-		//    disposition la réclame ({{ai}}) ou s'il n'y a ni champs ni gabarit.
-		//    Une couleur dotée de champs se passe donc du modèle par défaut,
-		//    même si un prompt est encore renseigné.
+		// Whole-response legacy output is requested only when a layout uses
+		// {{ai}}, or when neither fields nor a template exist.
+		// A configured field-only color therefore needs no whole-response
+		// request merely because an old color prompt remains.
 		let ai = "";
 		if (this.entryNeedsAI(entry)) {
-			if (!entry.prompt.trim()) return null;   // rien à demander au modèle
+			if (!entry.prompt.trim()) return null;   // There is nothing left to request from the model.
 			let t = Date.now();
 			ai = await this.generateComment({ text, ctx, color, comment, fields: values });
 			tAI += Date.now() - t;
 		}
 
-		// Publié pour le relevé de handleItem : « refs » = ouverture du PDF et
-		// résolution des citations, « ia » = attente du modèle.
+		// Expose handleItem progress: refs means PDF opening and citation
+		// resolution; ia means waiting for the model.
 		this._timings = { refs: tRefs, ai: tAI, build: Date.now() - t0 };
 
 		if (out) {
@@ -4145,13 +4554,13 @@ async handleResearchMetadata(id) {
 		return this.renderTemplate(tpl, vars);
 	},
 
-	// ---- Apple Intelligence (modèle embarqué de macOS) ----
+	// Apple Intelligence on-device macOS model.
 	//
-	// macOS 26+ expose le modèle Apple Intelligence via le framework
-	// FoundationModels, accessible uniquement depuis du code Swift : il n'existe
-	// ni endpoint HTTP ni CLI fourni. Annota écrit donc un petit programme Swift,
-	// le compile UNE FOIS (~1 s) dans le répertoire de données Zotero, puis
-	// réutilise le binaire (~1-2 s par appel). Tout reste sur la machine.
+	// macOS 26+ exposes Apple Intelligence through its framework,
+	// FoundationModels is accessible through Swift; there is no supplied
+	// without an HTTP endpoint or supplied CLI. Write a small Swift helper,
+	// compile it once in Zotero's data directory, then reuse the binary.
+	// Compilation takes roughly one second; calls remain entirely local.
 	APPLE_SWIFT_SOURCE: [
 		"import Foundation",
 		"import FoundationModels",
@@ -4186,7 +4595,7 @@ async handleResearchMetadata(id) {
 		"print(out)"
 	].join("\n"),
 
-	// Répertoire où déposer la source et le binaire.
+	// Directory for helper source and binary.
 	_appleDir() {
 		try {
 			if (Zotero.DataDirectory && Zotero.DataDirectory.dir) return Zotero.DataDirectory.dir;
@@ -4195,7 +4604,7 @@ async handleResearchMetadata(id) {
 		return Zotero.getTempDirectory().path;
 	},
 
-	// Compile le binaire si nécessaire, renvoie son chemin.
+	// Compile the helper if needed and return its path.
 	async ensureAppleBinary(Subprocess) {
 		let custom = String(getPref("applePath", "")).trim();
 		if (custom) return custom;
@@ -4217,17 +4626,17 @@ async handleResearchMetadata(id) {
 			});
 		}
 		catch (e) {
-			throw new Error("swiftc introuvable (" + swiftc + ") — installez les "
+			throw new Error("swiftc unavailable (" + swiftc + ") — installez les "
 				+ "Xcode Command Line Tools : xcode-select --install");
 		}
 		let errText = "", c;
 		while ((c = await proc.stderr.readString()) !== "") errText += c;
 		let { exitCode } = await proc.wait();
 		if (exitCode !== 0 || !(await IOUtils.exists(bin))) {
-			throw new Error("Compilation Swift échouée : "
+			throw new Error("Swift compilation failed: "
 				+ (errText.trim() || "code " + exitCode).slice(0, 300));
 		}
-		log("Binaire Apple Intelligence compilé : " + bin);
+		log("Apple Intelligence helper compiled: " + bin);
 		return bin;
 	},
 
@@ -4264,9 +4673,9 @@ async handleResearchMetadata(id) {
 			let { exitCode } = await proc.wait();
 			if (exitCode !== 0) {
 				throw new Error("Apple Intelligence (code " + exitCode + ") : "
-					+ (errText.trim() || "pas de détail").slice(0, 300));
+					+ (errText.trim() || "No details").slice(0, 300));
 			}
-			if (!out.trim()) throw new Error("Réponse vide d'Apple Intelligence");
+			if (!out.trim()) throw new Error("Empty Apple Intelligence response");
 			return opts.raw ? out.trim() : this.sanitize(out);
 		}
 		finally {
@@ -4274,18 +4683,18 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// ---- Claude Code CLI : emplacement, modèles, niveaux d'effort ----
+	// Claude Code CLI paths, models and effort levels.
 	//
-	// Le CLI ne liste pas les modèles d'un compte ; son aide, en revanche,
-	// annonce les alias qu'il accepte (« 'fable', 'opus', or 'sonnet' ») et les
-	// niveaux d'effort (« (low, medium, high, xhigh, max) »). On la lit plutôt
-	// que de figer ces listes : elles suivent ainsi la version installée.
+	// The CLI does not list account models, but its help lists accepted
+	// model aliases and effort levels. Read that help instead of
+	// hard-coding the lists, so capabilities follow the installed
+	// CLI version.
 
 	_cliResolved: new Map(),
 	_cliNoEffort: false,
 
-	// Emplacements habituels, pour retrouver `claude` quand Zotero ne voit
-	// pas le PATH du terminal.
+	// Search common executable locations when Zotero cannot see
+	// the terminal's PATH.
 	cliCandidates() {
 		let home = "";
 		try { home = Services.dirsvc.get("Home", Ci.nsIFile).path; } catch (e) {}
@@ -4298,7 +4707,7 @@ async handleResearchMetadata(id) {
 		].filter(Boolean);
 	},
 
-	// Chemin absolu de l'exécutable, ou "" s'il est introuvable.
+	// Absolute executable path, or empty when not found.
 	async resolveCLIPath(cmd) {
 		cmd = String(cmd || "").trim() || "claude";
 		if (this._cliResolved.has(cmd)) return this._cliResolved.get(cmd);
@@ -4313,7 +4722,7 @@ async handleResearchMetadata(id) {
 					"resource://gre/modules/Subprocess.sys.mjs");
 				found = await Subprocess.pathSearch(cmd);
 			}
-			catch (e) { /* pas dans le PATH de Zotero */ }
+			catch (e) { /* Not present in Zotero's PATH. */ }
 		}
 		if (!found) {
 			for (let c of this.cliCandidates()) {
@@ -4324,7 +4733,7 @@ async handleResearchMetadata(id) {
 		return found;
 	},
 
-	// Lit le bloc d'aide d'une option : sa ligne et les suivantes jusqu'à
+	// Read an option's help line and its following block up to
 	// l'option suivante.
 	parseCLIHelp(text) {
 		let lines = String(text || "").split("\n");
@@ -4353,8 +4762,8 @@ async handleResearchMetadata(id) {
 		return { models, efforts, effort: !!eff };
 	},
 
-	// Interroge le CLI installé et mémorise ce qu'il annonce (préférence
-	// cliCaps, relue par les réglages et la discussion).
+	// Inspect the installed CLI and cache its advertised capabilities
+	// in cliCaps for settings and Chat.
 	async probeCLI(pathOverride) {
 		let { Subprocess } = ChromeUtils.importESModule(
 			"resource://gre/modules/Subprocess.sys.mjs");
@@ -4393,9 +4802,9 @@ async handleResearchMetadata(id) {
 		catch (e) { return null; }
 	},
 
-	// Claude Code CLI local (`claude -p`). Utilise l'abonnement connecté du CLI,
-	// pas l'API facturée au token. Aucune clé API : l'authentification est celle
-	// de `claude` sur la machine. Lent (démarrage à froid par appel).
+	// Local claude -p uses the CLI's signed-in subscription,
+	// not a token-billed API. Authentication belongs to the installed
+	// CLI, so no separate API key is used. Cold starts can be slow.
 	async callCLI(prompt, opts = {}) {
 		let { system } = prompt;
 		let Subprocess;
@@ -4408,8 +4817,8 @@ async handleResearchMetadata(id) {
 		}
 
 		let wanted = String(getPref("cliPath", "claude")).trim() || "claude";
-		// Un nom nu (« claude ») est cherché dans le PATH puis aux emplacements
-		// habituels : Zotero ne voit pas le PATH du terminal.
+		// For a bare command name, search PATH and common locations because
+		// Zotero may not inherit the terminal environment.
 		let cmd = (await this.resolveCLIPath(wanted)) || wanted;
 		let model = String(opts.model || getPref("cliModel", "")).trim();
 		let effort = String(opts.effort !== undefined ? opts.effort
@@ -4420,7 +4829,7 @@ async handleResearchMetadata(id) {
 		if (effort) args.push("--effort", effort);
 		if (system) args.push("--append-system-prompt", system);
 
-		// Répertoire de travail neutre : évite de charger un CLAUDE.md de projet.
+		// Use a neutral working directory to avoid loading a project CLAUDE.md.
 		let workdir;
 		try { workdir = Zotero.getTempDirectory().path; } catch (e) { workdir = undefined; }
 
@@ -4434,16 +4843,16 @@ async handleResearchMetadata(id) {
 			});
 		}
 		catch (e) {
-			throw new Error("Impossible de lancer le CLI « " + cmd + " » : " + (e.message || e));
+			throw new Error("Could not launch CLI \"" + cmd + " » : " + (e.message || e));
 		}
 
-		// Garde-fou : tuer le process s'il dépasse le délai (ex. non connecté).
+		// Terminate the process on timeout, for example if authentication blocks.
 		let killTimer = setTimeout(() => { try { proc.kill(); } catch (e) {} },
 			opts.timeout || 120000);
 		if (opts.cancel) opts.cancel.onCancel(() => { try { proc.kill(); } catch (e) {} });
 		try {
-			// Le contexte passe par l'entrée standard, jamais par un argument :
-			// un document entier dépasserait la taille maximale d'un argument.
+			// Send context on standard input, not as an argument: a whole document
+			// can exceed the operating system's argument-length limit.
 			await proc.stdin.write(this.flattenPrompt(prompt));
 			await proc.stdin.close();
 
@@ -4453,18 +4862,18 @@ async handleResearchMetadata(id) {
 			while ((ce = await proc.stderr.readString()) !== "") errText += ce;
 
 			let { exitCode } = await proc.wait();
-			// CLI trop ancien pour --effort : on s'en passe plutôt que d'échouer.
+			// Older CLIs may lack --effort; omit it rather than fail.
 			if (exitCode !== 0 && effort && /unknown option.*effort|effort.*unknown/i.test(errText)) {
-				log("--effort refusé par ce CLI : appel sans niveau d'effort");
+				log("CLI rejected --effort; retrying without an effort level");
 				this._cliNoEffort = true;
 				clearTimeout(killTimer);
 				return this.callCLI(prompt, Object.assign({}, opts, { effort: "" }));
 			}
 			if (exitCode !== 0) {
 				throw new Error("CLI code " + exitCode + " : "
-					+ (errText.trim() || "(pas de sortie d'erreur)").slice(0, 300));
+					+ (errText.trim() || "(no error output)").slice(0, 300));
 			}
-			if (!out.trim()) throw new Error("Réponse vide du CLI");
+			if (!out.trim()) throw new Error("Empty CLI response");
 			return opts.raw ? out.trim() : this.sanitize(out);
 		}
 		finally {
@@ -4472,7 +4881,7 @@ async handleResearchMetadata(id) {
 		}
 	},
 
-	// Fournisseur compatible OpenAI (Mistral par défaut).
+	// OpenAI-compatible provider, defaulting to Mistral.
 	async callOpenAI({ system, user, context, history }, opts = {}) {
 		let cfg = this.chatConfig(opts.provider);
 		if (cfg.requiresKey && !cfg.apiKey) throw new Error("API key missing");
@@ -4481,8 +4890,8 @@ async handleResearchMetadata(id) {
 		if (isNaN(temp)) temp = 0.2;
 		temp = Math.max(0, Math.min(2, temp));
 
-		// Le contexte de la discussion (document, sources) rejoint les
-		// consignes : il reste en tête quel que soit le nombre de tours.
+		// Chat source/document context accompanies system instructions so
+		// it remains at the beginning regardless of conversation length.
 		let messages = [];
 		let sys = [system, context].filter(x => x && String(x).trim()).join("\n\n");
 		if (sys) messages.push({ role: "system", content: sys });
@@ -4493,17 +4902,17 @@ async handleResearchMetadata(id) {
 		messages.push({ role: "user", content: user });
 
 		let headers = { "Content-Type": "application/json" };
-		// Ollama ignore l'autorisation : on n'envoie l'en-tête que si une clé existe.
+		// Ollama ignores authorization; send that header only when a key exists.
 		if (cfg.apiKey) headers["Authorization"] = "Bearer " + cfg.apiKey;
 
 		let payload = { model: opts.model || cfg.model, temperature: temp, messages,
 			stream: false };
-		// Sortie structurée : le modèle rend un objet JSON au lieu d'un texte
-		// libre qu'il faut relire à la regex. Mistral et Ollama l'acceptent.
+		// Structured output requests a JSON object instead of free text
+		// requiring regular-expression parsing. Mistral and Ollama support it.
 		if (opts.json) payload.response_format = { type: "json_object" };
 
 		let resp = await this.httpJSON(cfg.endpoint, headers, payload,
-			opts.provider, opts.timeout, opts.cancel);
+			opts.provider, opts.timeout, opts.cancel, opts.safeRetry);
 
 		let data = resp.response;
 		let content = data && data.choices && data.choices[0]
@@ -4512,10 +4921,10 @@ async handleResearchMetadata(id) {
 		return opts.raw ? String(content).trim() : this.sanitize(content);
 	},
 
-	// POST JSON commun, avec message d'erreur lisible.
-	async httpJSON(url, headers, payload, override, timeoutMs, cancel) {
+	// Shared JSON POST with readable error reporting.
+	async httpJSON(url, headers, payload, override, timeoutMs, cancel, safeRetry = false) {
 		let prov = this.provider(override);
-		// Un modèle local doit d'abord être chargé en mémoire : délai plus large.
+		// Allow extra startup time for a local model to load into memory.
 		let timeout = timeoutMs || (prov === "ollama" ? 180000 : 45000);
 		try {
 			return await Zotero.HTTP.request("POST", url, {
@@ -4523,7 +4932,8 @@ async handleResearchMetadata(id) {
 				body: JSON.stringify(payload),
 				responseType: "json",
 				timeout,
-				// Zotero remet une fonction d'abandon : le « Stop » de la discussion.
+                ...(safeRetry ? { errorDelayMax:0, noRetryOnThrottle:true } : {}),
+				// Zotero supplies an abort callback for Chat's Stop action.
 				cancellerReceiver: cancel ? (fn => cancel.onCancel(fn)) : undefined
 			});
 		}
@@ -4532,8 +4942,8 @@ async handleResearchMetadata(id) {
 			let raw = "";
 			try { raw = e.xmlhttp ? e.xmlhttp.responseText : ""; } catch (e2) {}
 
-			// Extraire le message de l'API plutôt que d'afficher le JSON brut :
-			// « model 'llama3.1' not found » est autrement noyé dans l'objet.
+			// Extract the API error message rather than displaying raw JSON;
+			// otherwise useful missing-model messages are buried in the response.
 			let msg = "";
 			try {
 				let d = JSON.parse(raw);
@@ -4541,33 +4951,41 @@ async handleResearchMetadata(id) {
 					|| (d && d.message) || "";
 				if (typeof msg !== "string") msg = JSON.stringify(msg);
 			}
-			catch (e2) { /* pas du JSON */ }
+			catch (e2) { /* The response is not JSON. */ }
 			if (!msg) msg = raw.slice(0, 200);
 
-			// Aide ciblée sur les deux échecs Ollama les plus fréquents.
+			// Targeted guidance for the two most common Ollama failures.
 			if (prov === "ollama") {
 				if (/not found/i.test(msg)) {
-					msg += " — pick an installed model in Preferences → Annota "
+					msg += " — pick an installed model in Preferences → ResearchAnnotator "
 						+ "(tags matter: « llama3.1:8b », not « llama3.1 »).";
 				}
 				else if (!status || status === 0) {
 					msg = "Ollama unreachable — is it running? (" + msg + ")";
 				}
 			}
-			// Le statut est porté par l'erreur : décider de réessayer sur le
-			// libellé serait dépendre d'une chaîne de caractères, alors que
-			// « 401 » est une donnée.
+			// Use the status attached to the error for retry decisions instead
+			// of depending on message wording: status 401 is structured
+			// information rather than a localized string.
 			let err = new Error("API (HTTP " + status + ") " + msg);
 			err.status = (typeof status === "number") ? status : 0;
+            if (err.status === 429) {
+                err.requestRejected = true; err.retryable = true;
+                try { err.retryAfter = Number(e.xmlhttp.getResponseHeader("Retry-After")) || 1; } catch (_) { err.retryAfter = 1; }
+            }
 			throw err;
 		}
 	},
 
 	// ---- Traitement a posteriori (menu contextuel) ----
 
-	// Rassemble les annotations éligibles à partir d'une sélection : items
-	// classiques, pièces jointes, ou annotations sélectionnées directement.
-	async collectAnnotations(items) {
+	// Collect eligible annotations from regular items, attachments or
+	// directly selected annotations.
+	annotationChildren(item,ids=false){
+        if(!item?.isAttachment?.()||!(typeof item.isFileAttachment==='function'?item.isFileAttachment():(item.isPDFAttachment?.()||/^application\/(?:pdf|epub(?:\+zip)?)$/.test(item.attachmentContentType||''))))return [];
+        return item.getAnnotations(false,ids)||[];
+    },
+    async collectAnnotations(items) {
 		let out = [];
 		let seen = new Set();
 
@@ -4600,27 +5018,27 @@ async handleResearchMetadata(id) {
 		return out;
 	},
 
-	// Annotation traitable ? (type ciblé, texte non vide, bibliothèque modifiable)
+	// Check targeted type, nonempty text and editable library.
 	isEligible(ann, overwrite, failedOnly) {
 		if (!ann || !ann.isAnnotation || !ann.isAnnotation()) return false;
 		if (!this.targetTypes().includes(ann.annotationType)) return false;
 		if (ann.library && ann.library.editable === false) return false;
 		if (ann.annotationType !== "image" && !(ann.annotationText || "").trim()) return false;
-		// « Rejouer les échecs » ne regarde que les annotations marquées, et les
-		// reprend quel que soit leur commentaire — c'est bien un remplacement.
+		// Retry failures considers only tagged annotations and their
+		// explicit refill targets only the selected structured values; native Comment is preserved.
 		if (failedOnly) return this.hasFailedTag(ann);
 		if ((ann.annotationComment || "").trim() && !overwrite) return false;
 		return true;
 	},
 
-	// Lance la génération sur la sélection courante de la fenêtre.
-	// Volontairement indépendant de la préférence « enabled » : l'action est explicite.
+	// Generate for the current window selection.
+	// Explicit actions are deliberately independent of the enabled preference.
 	async runBatch(window, opts = {}) {
 		let overwrite = !!opts.overwrite;
 
 		let notReady = this.providerReadyError();
 		if (notReady) {
-			toast("Annota", notReady, "error");
+			toast("ResearchAnnotator", notReady, "error");
 			return;
 		}
 
@@ -4629,7 +5047,7 @@ async handleResearchMetadata(id) {
 			selected = window.ZoteroPane.getSelectedItems();
 		}
 		catch (e) {
-			log("runBatch: sélection illisible : " + e);
+			log("runBatch: selection unavailable: " + e);
 			return;
 		}
 		if (!selected || !selected.length) return;
@@ -4638,19 +5056,19 @@ async handleResearchMetadata(id) {
 		return this.processAnnotations(all, opts);
 	},
 
-	// Traitement commun : bibliothèque (menu contextuel) et lecteur (annotation
-	// ciblée). `all` = annotations candidates, déjà collectées.
+	// Shared processing for library selections and a targeted reader
+	// annotation. all already contains candidate annotations.
 	async processAnnotations(all, opts = {}) {
 		let overwrite = !!opts.overwrite || !!opts.failedOnly;
 		let eligible = all.filter(a => this.isEligible(a, overwrite, opts.failedOnly));
 
-		// Les couleurs sans prompt sont ignorées : on les compte à part pour
-		// pouvoir l'expliquer, sinon l'absence de résultat serait incompréhensible.
+		// Count unconfigured colors separately so skipping them can be
+		// explained instead of appearing to produce no result.
 		let targets = [];
 		let noPrompt = 0;
 		for (let a of eligible) {
-			// getColorEntry, pas getPromptForColor : une couleur peut être active
-			// avec un gabarit ou des champs seuls (commentaire déterministe).
+			// Use getColorEntry, not only getPromptForColor: fields or a template
+			// can produce deterministic output without a color prompt.
 			if (this.getColorEntry(this.keyForItem(a))) targets.push(a);
 			else noPrompt++;
 		}
@@ -4661,12 +5079,12 @@ async handleResearchMetadata(id) {
 			else if (opts.failedOnly) why = this.t("batch.noretry");
 			else if (all.length) why = this.t("batch.nothing");
 			else why = this.t("batch.none");
-			toast("Annota", why);
+			toast("ResearchAnnotator", why);
 			return;
 		}
 
 		let pw = new Zotero.ProgressWindow({ closeOnClick: false });
-		pw.changeHeadline("Annota");
+		pw.changeHeadline("ResearchAnnotator");
 		let bar = new pw.ItemProgress(
 			"chrome://zotero/skin/tick.png",
 			this.t("batch.progress", { i: 0, n: targets.length })
@@ -4677,12 +5095,19 @@ async handleResearchMetadata(id) {
 		for (let i = 0; i < targets.length; i++) {
 			let ann = targets[i];
 			try {
+                if (typeof AnnotaInfrastructure !== "undefined") {
+                    await AnnotaInfrastructure.generateJob(ann, { regenerate: !!opts.overwrite });
+                    this.setFailedTag(ann, false); await ann.saveTx(); ok++;
+                    bar.setProgress(Math.round(((i + 1) / targets.length) * 100));
+                    bar.setText(this.t("batch.progress", { i: i + 1, n: targets.length }));
+                    continue;
+                }
 				let annText = ann.annotationType === "image"
 					? await this.areaText(ann) : (ann.annotationText || "").trim();
 				let ctx = this.getContext(ann);
-				// Le menu contextuel traite toutes les couleurs ayant un prompt,
-				// « auto » ou « manuel ». Le commentaire existant (paraphrase
-				// manuelle) est transmis via {{comment}}.
+				// Explicit context-menu generation considers configured colors
+				// regardless of Automatic/Manual policy; existing native Comment remains independent.
+				// manual) is passed through {{comment}}.
 				let built = {};
 				let comment = await this.buildComment({
 					text: annText,
@@ -4695,7 +5120,7 @@ async handleResearchMetadata(id) {
 				});
 				if (comment === null || !String(comment).trim()) {
 					failed++;
-					await this.markFailed(ann.id, "résultat vide");
+					await this.markFailed(ann.id, "Empty result");
 					continue;
 				}
 				let fresh = await Zotero.Items.getAsync(ann.id);
@@ -4726,29 +5151,29 @@ async handleResearchMetadata(id) {
 		if (noPrompt) summary += this.t("batch.nocfg", { n: noPrompt });
 		bar.setText(summary);
 		pw.startCloseTimer(failed ? 8000 : 4000);
-		log("runBatch terminé : " + ok + " ok, " + failed + " échecs, "
+		log("runBatch completed: " + ok + " ok, " + failed + " failures, "
 			+ noPrompt + " sans prompt");
 	},
 
-	// ---- Formulaire de champs dans le popup de sélection ----
+	// Structured fields in the selection popup.
 	//
-	// Hook officiel « renderTextSelectionPopup » : la fenêtre qui apparaît quand
-	// on sélectionne du texte, AVANT que l'annotation existe. On y saisit les
-	// champs, puis on valide en choisissant une couleur de surlignage dans le
-	// popup de Zotero ; l'annotation créée récupère les valeurs.
+	// The official renderTextSelectionPopup hook runs before an annotation
+	// exists. Enter fields, then create the annotation by selecting its
+	// highlight color; the created item receives the saved draft
+	// values.
 	//
-	// Cliquer une pastille CRÉE l'annotation : il n'existe pas d'étape « choisir
-	// la couleur puis valider ». On n'affiche donc pas la couleur retenue, on
-	// affiche celle que vous vous apprêtez à cliquer — le survol des pastilles
-	// de Zotero pilote le groupe de champs. À défaut, nos propres pastilles.
+	// Clicking a native swatch creates the annotation; there is no separate
+	// color selection and confirmation step. Show fields for the color
+	// the pointer is approaching, using native swatch hover events
+	// or the extension's fallback palette.
 
 	_selectionListener: null,
 	_pendingFields: null,          // { text, values, ts, color }
 	_pendingResearch: null,
-	_lastColor: null,              // dernière couleur réellement traitée
+	_lastColor: null,              // Last color actually processed.
 
-	// Union des champs de toutes les couleurs, dédoublonnée par nom.
-	// Conservée comme repli quand aucune couleur n'est désignable.
+	// Union of all color fields, deduplicated by name.
+	// Fallback when no individual color can be identified.
 	allFieldsSchema() {
 		let seen = new Set(), out = [];
 		for (let c of this.COLORS) {
@@ -4761,19 +5186,19 @@ async handleResearchMetadata(id) {
 		return out;
 	},
 
-	// Champs saisissables d'une couleur (les champs « ai » sont écrits par le
-	// modèle, jamais par vous).
+	// Editable manual fields only: the model owns AI-generated
+	// values in the ordinary editing interface.
 	visibleFieldsFor(hex) {
-		return this.fieldsForColor(hex).filter(f => f.type !== "ai");
+		return this.annotationFields(hex).filter(f => f.type !== "ai");
 	},
 
-	// Couleurs ayant au moins un champ à saisir.
+	// Colors with at least one manual input field.
 	colorsWithFields() {
-		return this.COLORS.filter(c => this.visibleFieldsFor(c.hex).length);
+		return this.COLORS.filter(c => this.annotationFields(c.hex).length);
 	},
 
-	// Groupe affiché tant qu'aucune pastille n'a été désignée : la dernière
-	// couleur utilisée, parce qu'on surligne rarement une seule fois.
+	// Before a swatch is designated, show the last-used color's fields
+	// because a reading session usually creates multiple annotations.
 	defaultFieldColor() {
 		let withFields = this.colorsWithFields();
 		if (!withFields.length) return null;
@@ -4813,6 +5238,7 @@ _renderColorLabels({ doc }) {
 
     let popup = doc.querySelector(".selection-popup");
     if (!popup) return;
+    if (popup.querySelector(".annota-palette-picker")) return;
 
     let colorsContainer = popup.querySelector(".colors");
     if (!colorsContainer) return;
@@ -4865,7 +5291,7 @@ _renderColorLabels({ doc }) {
         layout === "slanted" ? "25px" : "5px";
 
     buttons.forEach((btn, index) => {
-        let color = this.COLORS[index];
+        let color = (typeof AnnotaPalette !== "undefined" ? AnnotaPalette.nativeColors() : this.COLORS)[index];
         if (!color) return;
 
         let label = String(
@@ -4991,209 +5417,43 @@ schedule(() => {
 });
 },
 // Add optional research annotation fields below the color buttons.
-_renderResearchCapture({ doc, params }) {
+_renderResearchCapture({ doc, params, reader: eventReader }) {
     if (!doc) return;
-
-    let popup = doc.querySelector(".selection-popup");
-    if (!popup) return;
-
-    let colorsContainer = popup.querySelector(".colors");
-    if (!colorsContainer) return;
-
-    // Prevent duplicate fields.
-    if (popup.querySelector(".annota-research-capture")) return;
-
-    // Identify the library containing the selected PDF.
-    const reader = (Zotero.Reader?._readers || []).find(
-        reader => reader?._iframeWindow?.document === doc
-    );
-
-    const libraryID = reader?._item?.libraryID;
-
+    const popup = doc.querySelector(".selection-popup");
+    if (!popup || popup.querySelector(".annota-research-capture")) return;
+    const insertionPoint = popup.querySelector(".tool-toggle") || popup.querySelector(".colors");
+    if (!insertionPoint) return;
     this._ensureFormStyles(doc);
-
-let container = doc.createElement("div");
-container.className = this.FORM_CLASS + " annota-research-capture";
-
-    container.style.cssText =
-        "width:100%;box-sizing:border-box;"
-        + "margin-top:10px;padding-top:8px;"
-        + "border-top:1px solid rgba(128,128,128,.3);"
-        + "display:flex;flex-direction:column;gap:7px;";
-
-    // Section heading removed.
-
-    // Consistent field creation.
-    const createField = (labelText, control) => {
-        let field = doc.createElement("div");
-
-        field.style.cssText =
-            "display:flex;flex-direction:column;gap:3px;";
-
-        let label = doc.createElement("label");
-        label.textContent = labelText;
-        label.style.cssText =
-            "font-size:10px;font-weight:600;opacity:.75;";
-
-        field.appendChild(label);
-        field.appendChild(control);
-        container.appendChild(field);
-
-        return control;
-    };
-
-    const inputStyle =
-        "width:100%;box-sizing:border-box;"
-        + "font:inherit;font-size:11px;padding:6px;"
-        + "border:1px solid rgba(128,128,128,.4);"
-        + "border-radius:4px;";
-
-    // Personal research comment.
-    let comment = doc.createElement("textarea");
-    comment.className = "annota-research-comment";
-    comment.placeholder =
-        "Why is this passage important? Add your thoughts...";
-    comment.rows = 2;
-
-    comment.style.cssText =
-        inputStyle + "resize:vertical;";
-
-    createField("Comment", comment);
-this._shieldFromReaderShortcuts(comment, "textarea");
-    // Native Zotero tags.
-    let tags = doc.createElement("input");
-    tags.className = "annota-research-tags";
-    tags.type = "text";
+    this._ensureAnnotationInterfaceStyles(doc);
+    const container = doc.createElement("div"); container.className = this.FORM_CLASS + " annota-research-capture";
+    const label = doc.createElement("label"), tags = doc.createElement("input");
+    label.textContent = "Zotero Tags"; tags.type = "text"; tags.className = "annota-research-tags";
     tags.placeholder = "Add tags, separated by commas...";
-    tags.style.cssText = inputStyle;
-
-    createField("Zotero Tags", tags);
-
-    // Create reusable research fields.
-    const createResearchInput = (label, fieldName) => {
-        const input = doc.createElement("input");
-
-        input.type = "text";
-        input.className = "annota-research-" + fieldName;
-        input.placeholder = "Enter values separated by commas...";
-        input.style.cssText = inputStyle;
-
-        const datalist = doc.createElement("datalist");
-        datalist.id =
-            "annota-" + fieldName + "-" + Date.now();
-
-        input.setAttribute("list", datalist.id);
-
-        createField(label, input);
-        container.appendChild(datalist);
-
-        return { input, datalist };
-    };
-
-    const themesField = createResearchInput(
-        "Research themes",
-        "themes"
-    );
-
-    const experimentsField = createResearchInput(
-        "Experiments",
-        "experiments"
-    );
-
-    // Convert comma-separated input into unique values.
-    const parseValues = value => [
-        ...new Set(
-            value
-                .split(",")
-                .map(v => v.trim())
-                .filter(Boolean)
-        )
-    ];
-
-    // Keep all research information together until Zotero
-    // creates the actual annotation.
-    const syncResearchData = () => {
-        this._pendingResearch = {
-            text: params?.annotation?.text || "",
-
-            values: {
-                comment: comment.value.trim(),
-                tags: parseValues(tags.value),
-                themes: parseValues(themesField.input.value),
-                experiments: parseValues(experimentsField.input.value)
-            },
-
-            ts: Date.now()
-        };
-    };
-
-    [
-        comment,
-        tags,
-        themesField.input,
-        experimentsField.input
-    ].forEach(input => {
-        input.addEventListener("input", syncResearchData);
-        input.addEventListener("change", syncResearchData);
+    label.appendChild(tags); container.appendChild(label);
+    const reader = eventReader || (Zotero.Reader?._readers || []).find(r => r?._iframeWindow?.document === doc);
+    const native = doc.createElement("textarea"), commentLabel = doc.createElement("label");
+    native.className = "annota-native-comment-input"; native.rows = 2;
+    native.setAttribute("aria-label", "Comment"); native.placeholder = "Add a comment...";
+    commentLabel.className = "annota-native-comment"; commentLabel.textContent = "Comment";
+    commentLabel.appendChild(native); this._orderAnnotationControls(container, [commentLabel, label]);
+    this._shieldFromReaderShortcuts(native, "textarea");
+    const attachmentID = reader?.itemID || reader?._item?.id;
+    const draftKey = String(attachmentID || "") + "/" + this._normText(params?.annotation?.text || "");
+    if (!this._nativeCommentDrafts) this._nativeCommentDrafts = new Map();
+    for (const [key, draft] of this._nativeCommentDrafts) if (Date.now() - draft.ts > 600000) this._nativeCommentDrafts.delete(key);
+    native.value = this._nativeCommentDrafts.get(draftKey)?.value || "";
+    native.addEventListener("input", () => {
+        if (!attachmentID) return;
+        this._nativeCommentDrafts.set(draftKey, { attachmentID, value: native.value, ts: Date.now() });
     });
-
-    // Restore values if Zotero rerenders the selection popup.
-    const pending = this._pendingResearch;
-
-    if (pending && pending.text === (params?.annotation?.text || "")) {
-        comment.value = pending.values.comment || "";
-        tags.value = (pending.values.tags || []).join(", ");
-
-        themesField.input.value =
-            (pending.values.themes || []).join(", ");
-
-        experimentsField.input.value =
-            (pending.values.experiments || []).join(", ");
-    }
-
-    // Load reusable themes and experiments from the library.
-    if (libraryID != null) {
-        (async () => {
-            try {
-                const metadata = await this._getResearchMetadata(libraryID);
-
-                const populateSuggestions = (datalist, values) => {
-                    datalist.replaceChildren();
-
-                    for (const value of values) {
-                        const option = doc.createElement("option");
-                        option.value = value;
-                        datalist.appendChild(option);
-                    }
-                };
-
-                populateSuggestions(
-                    themesField.datalist,
-                    metadata.themes
-                );
-
-                populateSuggestions(
-                    experimentsField.datalist,
-                    metadata.experiments
-                );
-            }
-            catch (e) {
-                log("Loading research suggestions failed: " + e);
-            }
-        })();
-    }
-    else {
-        log("Could not determine library ID for research capture");
-    }
-
-    // Insert below Highlight / Underline controls.
-    const controlsContainer = popup.querySelector(".tool-toggle");
-    const insertionPoint = controlsContainer || colorsContainer;
-
-    insertionPoint.parentNode.insertBefore(
-        container,
-        insertionPoint.nextSibling
-    );
+    this._shieldFromReaderShortcuts(tags, "text");
+    const text = params?.annotation?.text || "";
+    if (this._pendingResearch?.text === text) tags.value = (this._pendingResearch.values.tags || []).join(", ");
+    const sync = () => { this._pendingResearch = { text, ts: Date.now(), values: {
+        tags: [...new Set(tags.value.split(",").map(value => value.trim()).filter(Boolean))]
+    } }; };
+    tags.addEventListener("input", sync); tags.addEventListener("change", sync);
+    insertionPoint.parentNode.insertBefore(container, insertionPoint.nextSibling);
 },
 // Monitor Zotero readers for the popup shown when clicking an existing annotation.
 // Recalculate the existing annotation popup position after extension UI changes.
@@ -5414,6 +5674,7 @@ _renderExistingAnnotationResearch({ doc, popup, annotation, reader }) {
     let container = popup.querySelector(".annota-existing-research");
 
 if (container?.dataset.annotationKey === annotationKey) {
+    container._refreshColor?.();
     return;
 }
 
@@ -5423,6 +5684,7 @@ const oldColorPanel = popup.querySelector(".annota-existing-colors");
 if (oldColorPanel) oldColorPanel.remove();
 
 this._ensureFormStyles(doc);
+this._ensureAnnotationInterfaceStyles(doc);
 
 container = doc.createElement("div");
 container.className = this.FORM_CLASS + " annota-existing-research";
@@ -5430,7 +5692,7 @@ container.className = this.FORM_CLASS + " annota-existing-research";
 
     container.style.cssText =
         "width:100%;box-sizing:border-box;"
-        + "padding:9px 10px;"
+        + "padding:2px 0;"
         + "border-top:1px solid rgba(128,128,128,.3);"
         + "display:flex;flex-direction:column;gap:8px;";
 
@@ -5484,6 +5746,13 @@ if (annotationType === "highlight" || annotationType === "underline") {
         convertButton.disabled = true;
 
         try {
+            if (typeof AnnotaInfrastructure !== "undefined") {
+                await container._flushDraft?.();
+                await AnnotaCardFields.flush();
+                if (!this._activeStructuredConversions) this._activeStructuredConversions = new Map();
+                this._activeStructuredConversions.set(item.libraryID + ":" + item.key, { libraryID: item.libraryID, oldID: item.key,
+                    oldAnnotationKey: item.libraryID + ":" + item.key, parentID: item.parentID, targetType, text: this._normText(item.annotationText || ""), createdAt: Date.now() });
+            }
             const beforeIDs = this._readerAnnotationIDs(reader);
 
             // Zotero may update its reader state asynchronously.
@@ -5657,58 +5926,37 @@ verified =
             log("Native annotation conversion failed: " + e);
             convertButton.disabled = false;
         }
+        finally { this._activeStructuredConversions?.delete(item.libraryID + ":" + item.key); }
     });
     colorPanel.appendChild(convertButton);
 }
 
     const colorLabels = this.getColorLabels();
 
-    let colorLayout = String(
-        getPref("colorLabelLayout", "wrap") || "wrap"
-    );
-
-    if (!["wrap", "single", "stack", "slanted"].includes(colorLayout)) {
-        colorLayout = "wrap";
-    }
-
     const colorContainer = doc.createElement("div");
-
-    colorContainer.style.cssText =
-        "display:flex;"
-        + "align-items:center;"
-        + "box-sizing:border-box;"
-        + "gap:" + (colorLayout === "slanted" ? "2px" : "8px") + ";"
-        + "flex-direction:" + (colorLayout === "stack" ? "column" : "row") + ";"
-        + "flex-wrap:" + (
-            colorLayout === "wrap" || colorLayout === "slanted"
-                ? "wrap"
-                : "nowrap"
-        ) + ";"
-        + "width:" + (colorLayout === "single" ? "max-content" : "100%") + ";"
-        + "max-width:100%;"
-        + "padding-top:" + (colorLayout === "slanted" ? "22px" : "5px") + ";"
-        + "padding-bottom:" + (colorLayout === "slanted" ? "25px" : "5px") + ";"
-        + "padding-left:2px;"
-        + "padding-right:2px;"
-        + "overflow:visible;";
+    if (typeof AnnotaPalette !== "undefined") AnnotaPalette.stylePicker(colorContainer);
+    else colorContainer.style.cssText = "display:flex;flex-wrap:wrap;gap:5px;width:100%;";
 
     const updateSelectedColor = () => {
         const currentColor = String(item.annotationColor || "").toLowerCase();
+        container.dataset.currentColor=currentColor;
 
         for (const button of colorContainer.querySelectorAll("button")) {
-            const selected =
-                button.dataset.color.toLowerCase() === currentColor;
+            const selected = typeof AnnotaPalette !== "undefined" && AnnotaPalette.resolve(currentColor)
+                ? AnnotaPalette.resolve(button.dataset.color)?.id === AnnotaPalette.resolve(currentColor).id
+                : button.dataset.color.toLowerCase() === currentColor;
 
             button.setAttribute("aria-pressed", String(selected));
+            if (typeof AnnotaPalette !== "undefined") {
+                const color = AnnotaPalette.resolve(button.dataset.color);
+                if (color) AnnotaPalette.styleButton(button, color, selected);
+            }
 
-            button.style.outline = selected
-                ? "2px solid var(--fill-primary)"
-                : "none";
-
-            button.style.outlineOffset = selected ? "2px" : "0";
+            else { button.style.outline = selected ? "2px solid Highlight" : "none"; button.style.outlineOffset = "1px"; }
         }
     };
 
+    container._refreshColor=()=>{if(container.dataset.currentColor!==String(item.annotationColor||"").toLowerCase())updateSelectedColor();};
     for (const color of this.COLORS) {
         const button = doc.createElement("button");
         button.type = "button";
@@ -5722,39 +5970,9 @@ verified =
         button.title = label;
         button.setAttribute("aria-label", "Set annotation colour to " + label);
 
-        const hex = color.hex.replace("#", "");
-        const r = parseInt(hex.substring(0, 2), 16);
-        const g = parseInt(hex.substring(2, 4), 16);
-        const b = parseInt(hex.substring(4, 6), 16);
-
-        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-        const textColor = brightness > 150 ? "#222222" : "#ffffff";
-
-        button.style.cssText =
-            "display:inline-flex;"
-            + "align-items:center;"
-            + "justify-content:center;"
-            + "box-sizing:border-box;"
-            + "padding:4px 8px;"
-            + "border:1px solid rgba(128,128,128,.35);"
-            + "border-radius:4px;"
-            + "background-color:" + color.hex + ";"
-            + "color:" + textColor + ";"
-            + "font-size:11px;"
-            + "font-weight:600;"
-            + "line-height:1.3;"
-            + "white-space:nowrap;"
-            + "cursor:pointer;"
-            + "flex:none;";
-
-        if (colorLayout === "slanted") {
-            button.style.transform = "rotate(-18deg)";
-            button.style.marginRight = "-9px";
-            button.style.marginBottom = "2px";
-        }
-
         button.addEventListener("click", async () => {
             const previousColor = item.annotationColor;
+            let colorSaved = false;
 
             if (
                 String(previousColor || "").toLowerCase() ===
@@ -5768,8 +5986,12 @@ verified =
             }
 
             try {
+                // Save the fields under the OLD color before changing it.
+                await saveColorFields();
+
                 item.annotationColor = color.hex;
                 await item.saveTx();
+                colorSaved = true;
 
                 const savedItem = await Zotero.Items.getAsync(item.id);
 
@@ -5788,6 +6010,9 @@ verified =
 
                 updateSelectedColor();
 
+                // Render the fields belonging to the NEW color.
+                await renderColorFields();
+
                 log(
                     "Annotation colour changed: "
                     + annotation.id
@@ -5796,10 +6021,19 @@ verified =
                 );
             }
             catch (e) {
-                item.annotationColor = previousColor;
+                if(!colorSaved)item.annotationColor = previousColor;
                 log("Changing annotation colour failed: " + e);
+                fieldStatus.textContent=(colorSaved?'Color saved. The research note could not be updated: ':'Color could not be saved: ')+(e.message||e);
+                if(colorSaved&&!colorPanel.querySelector('[data-retry-note]')){const retry=doc.createElement('button');retry.type='button';retry.textContent='Retry note update';retry.dataset.retryNote='true';retry.addEventListener('click',async()=>{retry.disabled=true;try{await this._syncPaperResearchNote(item);fieldStatus.textContent='Research note updated.';retry.remove();}catch(error){fieldError(error);}finally{retry.disabled=false;}});colorPanel.appendChild(retry);}
 
                 updateSelectedColor();
+
+                try {
+                    await renderColorFields();
+                }
+                catch (renderError) {
+                    log("Restoring color-specific fields failed: " + renderError);
+                }
             }
             finally {
                 for (const otherButton of colorContainer.querySelectorAll("button")) {
@@ -5808,6 +6042,7 @@ verified =
             }
         });
 
+        if (typeof AnnotaPalette !== "undefined") AnnotaPalette.styleButton(button, color, color.hex === String(item.annotationColor).toLowerCase());
         colorContainer.appendChild(button);
     }
 
@@ -5822,211 +6057,269 @@ verified =
 
     updateSelectedColor();
 
-    const createField = (labelText, fieldName, suggestions) => {
-        const wrapper = doc.createElement("div");
+    // Shared global-first schema; dedicated research categories are not rendered.
+    const colorFieldsSection = doc.createElement("div");
+    colorFieldsSection.className = "annota-color-specific-fields";
+    colorFieldsSection.style.cssText =
+        "display:flex;flex-direction:column;gap:4px;"
+        + "width:100%;box-sizing:border-box;";
 
-        wrapper.style.cssText =
-            "display:flex;flex-direction:column;gap:3px;";
 
-        const label = doc.createElement("label");
-        label.textContent = labelText;
-        label.style.cssText =
-            "font-size:11px;font-weight:600;";
-
-        const input = doc.createElement("input");
-        input.type = "text";
-        input.className = "annota-research-field";
-        input.dataset.field = fieldName;
-        input.placeholder = "Enter values separated by commas";
-        input.style.cssText =
-            "width:100%;box-sizing:border-box;"
-            + "padding:5px 7px;"
-            + "border:1px solid rgba(128,128,128,.4);"
-            + "border-radius:4px;"
-            + "background:var(--fill-quinary);"
-            + "color:var(--fill-primary);"
-            + "font-size:12px;";
-
-        const list = doc.createElement("datalist");
-        list.id = "annota-" + fieldName + "-" + annotation.id;
-
-        for (const value of suggestions || []) {
-            const option = doc.createElement("option");
-            option.value = value;
-            list.appendChild(option);
-        }
-
-        input.setAttribute("list", list.id);
-
-        wrapper.appendChild(label);
-        wrapper.appendChild(input);
-        wrapper.appendChild(list);
-        container.appendChild(wrapper);
-
-        return input;
+    let colorFieldInputs = Object.create(null);
+    let colorFieldSaveTimer = null;
+    let colorFieldSaveQueue = Promise.resolve();
+    const fieldStatus = doc.createElement("div");
+    fieldStatus.className = "annota-structured-status";
+    fieldStatus.setAttribute("role", "status");
+    const fieldError = e => {
+        fieldStatus.textContent = this.t("gen.failed", { msg: e.message || e });
+        log("Structured fields: " + e);
     };
 
-    const themesInput = createField(
-        "Research themes",
-        "themes",
-        []
-    );
+    const saveColorFields = () => {
+        if (colorFieldSaveTimer !== null) {
+            clearTimeout(colorFieldSaveTimer);
+            colorFieldSaveTimer = null;
+        }
 
-    const experimentsInput = createField(
-        "Experiments",
-        "experiments",
-        []
-    );
+        // Capture this color and its draft before asynchronous work or color switches.
+        const colorKey = this.keyForItem(item);
+        const patch = {};
+        const controls = Object.assign({}, colorFieldInputs);
+        for (const field of this.annotationFields(colorKey).filter(f => f.type !== "ai")) {
+            const control = controls[field.name];
+            if (!control || control.dataset.dirty !== "true") continue;
+            patch[field.name] = this.readManualField(field, control);
+        }
+        const saveTask = colorFieldSaveQueue.catch(() => {}).then(async () => {
+            if (typeof AnnotaCardFields === "undefined" || !AnnotaCardFields) {
+                throw new Error("Color-specific field storage is unavailable.");
+            }
 
-    const parseValues = value => [
-        ...new Set(
-            value
-                .split(",")
-                .map(v => v.trim())
-                .filter(Boolean)
-        )
-    ];
+            await AnnotaCardFields.load();
 
-    const saveResearchFields = () => {
-        const themesValue = themesInput.value;
-        const experimentsValue = experimentsInput.value;
+            if (!Object.keys(patch).length) return;
+            if (this.keyForItem(item) !== colorKey) throw new Error("Annotation color changed before saving. Please retry.");
+            await AnnotaCardFields.saveValues(item, patch);
+            for (const [name, value] of Object.entries(patch)) {
+                const control = controls[name];
+                const field = this.fieldByName(item, name);
+                const current = this.readManualField(field, control);
+                if (JSON.stringify(current) === JSON.stringify(value)) control.dataset.dirty = "false";
+            }
 
-        const themesVersion = themesInput.dataset.editVersion || "0";
-        const experimentsVersion =
-            experimentsInput.dataset.editVersion || "0";
+            // Refresh the consolidated paper note after the field save.
+            await this._syncPaperResearchNote(item);
+            fieldStatus.textContent = this.t("card.saved");
 
-        this._researchMetadataSaveQueue =
-            (this._researchMetadataSaveQueue || Promise.resolve())
-            .then(async () => {
-                const themes = parseValues(themesValue);
-                const experiments = parseValues(experimentsValue);
+            log("Color-specific fields saved for " + item.key
+                + " (" + this.keyForItem(item) + ")");
+        });
 
-                await this._updateResearchMetadata(
-                    annotation.libraryID,
-                    metadata => {
-                        metadata.themes = [
-                            ...new Set([...metadata.themes, ...themes])
-                        ];
+        colorFieldSaveQueue = saveTask;
+        return saveTask;
+    };
 
-                        metadata.experiments = [
-                            ...new Set([
-                                ...metadata.experiments,
-                                ...experiments
-                            ])
-                        ];
+    const scheduleColorFieldSave = () => {
+        if (colorFieldSaveTimer !== null) {
+            clearTimeout(colorFieldSaveTimer);
+        }
 
-                        const annotationMetadata = {
-                            ...(metadata.annotations[annotationKey] || {}),
-                            themes,
-                            experiments
-                        };
-
-                        // Remove the accidentally introduced Name field.
-                        delete annotationMetadata.name;
-                        delete annotationMetadata.researchComment;
-
-                        metadata.annotations[annotationKey] =
-                            annotationMetadata;
-                    }
-                );
-                if (
-                    (themesInput.dataset.editVersion || "0") === themesVersion &&
-                    themesInput.value === themesValue
-                ) {
-                    themesInput.dataset.dirty = "false";
-                }
-
-                if (
-                    (experimentsInput.dataset.editVersion || "0") ===
-                        experimentsVersion &&
-                    experimentsInput.value === experimentsValue
-                ) {
-                    experimentsInput.dataset.dirty = "false";
-                }
-
-                log("Research fields saved for annotation " + annotation.id);
-            })
-            .catch(e => {
-                log("Saving research fields failed: " + e);
+        colorFieldSaveTimer = setTimeout(() => {
+            colorFieldSaveTimer = null;
+            saveColorFields().catch(e => {
+                fieldError(e);
             });
+        }, 600);
     };
 
-    let researchSaveTimer = null;
+    const renderColorFields = async () => {
+        if (typeof AnnotaCardFields === "undefined" || !AnnotaCardFields) {
+            colorFieldsSection.replaceChildren();
+            colorFieldsSection.style.display = "none";
+            return;
+        }
 
-    const scheduleResearchSave = () => {
-        clearTimeout(researchSaveTimer);
-        researchSaveTimer = setTimeout(saveResearchFields, 700);
-    };
+        await AnnotaCardFields.load();
 
-    const commitResearchSave = () => {
-        clearTimeout(researchSaveTimer);
-        researchSaveTimer = null;
-        saveResearchFields();
-    };
+        const colorKey = this.keyForItem(item);
+        const schema = this.annotationFields(colorKey);
+        const saved = AnnotaCardFields.get(item) || {};
+        const values = saved.values || {};
 
-    for (const input of [themesInput, experimentsInput]) {
-        input.addEventListener("input", () => {
-            input.dataset.dirty = "true";
-            input.dataset.editVersion =
-                String((Number(input.dataset.editVersion) || 0) + 1);
+        colorFieldsSection.replaceChildren();
+        colorFieldInputs = Object.create(null);
 
-            scheduleResearchSave();
-        });
+        if (!schema.length) {
+            colorFieldsSection.style.display = "none";
+            return;
+        }
 
-        input.addEventListener("blur", commitResearchSave);
+        colorFieldsSection.style.display = "flex";
 
-        input.addEventListener("keydown", event => {
-            if (event.key === "Enter") {
-                event.preventDefault();
-                commitResearchSave();
+        const heading = doc.createElement("div");
+        heading.textContent = "Color-specific fields";
+        heading.style.cssText =
+            "font-size:11px;font-weight:600;margin-top:2px;";
+        colorFieldsSection.appendChild(heading);
+
+        for (const field of schema) {
+            const wrapper = doc.createElement("div");
+            this._styleStructuredField(wrapper, field);
+            wrapper.style.cssText =
+                "display:flex;flex-direction:column;gap:3px;";
+
+            const label = doc.createElement("label");
+            label.textContent = field.label;
+            label.style.cssText = "font-size:11px;font-weight:600;";
+
+            let control;
+
+            if (field.type === "ai") {
+                control = doc.createElement("div");
+                control.className = "annota-popup-ai";
+                control.dataset.ai = "true";
+                this.renderAIField(control, field, values[field.name], item);
+                wrapper.appendChild(label);
+                wrapper.appendChild(control);
+                const retry = AnnotaCardFields.fieldRetry(doc, field, async () => item, saveColorFields);
+                const error = doc.createElement("div"); error.className = "annota-field-error"; error.setAttribute("role", "status");
+                retry._error = error; control._retry = retry;
+                wrapper.appendChild(error); wrapper.appendChild(retry);
+                colorFieldInputs[field.name] = control;
+                colorFieldsSection.appendChild(wrapper);
+                continue;
             }
-        });
-    }
 
-    // Load saved research values and reusable suggestions.
-    (async () => {
-        try {
-            const metadata = await this._getResearchMetadata(
-                annotation.libraryID
-            );
-
-            const saved = metadata.annotations[annotationKey] || {};
-
-            if (
-                themesInput.dataset.dirty !== "true" &&
-                doc.activeElement !== themesInput
-            ) {
-                themesInput.value = (saved.themes || []).join(", ");
+            if (field.type === "multiselect") {
+                control = this.createMultiSelect(doc, field, values[field.name], () => {
+                    control.dataset.dirty = "true"; scheduleColorFieldSave();
+                });
+                wrapper.appendChild(label); wrapper.appendChild(control);
             }
+            else if (field.type === "check") {
+                const checkRow = doc.createElement("label");
+                checkRow.style.cssText =
+                    "display:flex;align-items:center;gap:7px;"
+                    + "font-size:12px;";
 
-            if (
-                experimentsInput.dataset.dirty !== "true" &&
-                doc.activeElement !== experimentsInput
-            ) {
-                experimentsInput.value =
-                    (saved.experiments || []).join(", ");
+                control = doc.createElement("input");
+                control.type = "checkbox";
+                control.checked = /^(true|yes|oui|1|x|✓)$/i.test(String(values[field.name] || ""));
+                control.style.margin = "0";
+
+                checkRow.appendChild(control);
+                checkRow.appendChild(doc.createTextNode(field.label));
+                wrapper.appendChild(checkRow);
             }
+            else {
+                if (field.type === "select") {
+                    control = doc.createElement("select");
 
-            const updateSuggestions = (input, values) => {
-                const list = input.list;
-                if (!list) return;
+                    const emptyOption = doc.createElement("option");
+                    emptyOption.value = "";
+                    emptyOption.textContent = "—";
+                    control.appendChild(emptyOption);
 
-                list.replaceChildren();
+                    const options = (field.options || []).slice();
+                    const savedValue = this.fieldDisplayValue(field, values[field.name]);
 
-                for (const value of values || []) {
-                    const option = doc.createElement("option");
-                    option.value = value;
-                    list.appendChild(option);
+                    // Preserve a previously saved value even if the template
+                    // options have since changed.
+                    if (savedValue && !options.includes(savedValue)) {
+                        options.unshift(savedValue);
+                    }
+
+                    for (const optionValue of options) {
+                        const option = doc.createElement("option");
+                        option.value = optionValue;
+                        option.textContent = optionValue;
+                        control.appendChild(option);
+                    }
+
+                    control.value = savedValue;
                 }
-            };
+                else if (field.type === "textarea") {
+                    control = doc.createElement("textarea");
+                    control.rows = 2;
+                    control.value = this.fieldDisplayValue(field, values[field.name]);
+                }
+                else {
+                    control = doc.createElement("input");
+                    control.type = "text";
+                    control.value = this.fieldDisplayValue(field, values[field.name]);
+                }
 
-            updateSuggestions(themesInput, metadata.themes);
-            updateSuggestions(experimentsInput, metadata.experiments);
+                control.style.cssText =
+                    "width:100%;box-sizing:border-box;"
+                    + "padding:5px 7px;"
+                    + "border:1px solid rgba(128,128,128,.4);"
+                    + "border-radius:4px;"
+                    + "background:var(--fill-quinary);"
+                    + "color:var(--fill-primary);"
+                    + "font-size:12px;";
+
+                wrapper.appendChild(label);
+                wrapper.appendChild(control);
+            }
+
+            colorFieldInputs[field.name] = control;
+            control.disabled = !!annotation.readOnly || item.library?.editable === false;
+            if (control.setDisabled) control.setDisabled(control.disabled);
+
+            if (field.type !== "multiselect") control.addEventListener(
+                field.type === "check" || field.type === "select"
+                    ? "change"
+                    : "input",
+                () => { control.dataset.dirty = "true"; scheduleColorFieldSave(); }
+            );
+            control.addEventListener("blur", () => {
+                if (control.dataset.dirty === "true") saveColorFields().catch(fieldError);
+            });
+
+            colorFieldsSection.appendChild(wrapper);
         }
-        catch (e) {
-            log("Loading research fields failed: " + e);
+        refreshStructuredFields();
+    };
+
+    renderColorFields().catch(e => {
+        fieldError(e);
+    });
+    const refreshStructuredFields = () => {
+        manualGenerate.hidden = !this.canGenerateAIFields(item) || !!annotation.readOnly || item.library?.editable === false;
+        manualGenerate.disabled = !!AnnotaCardFields.generationState(item).running;
+        const message = AnnotaCardFields.generationMessage(item);
+        if (message) fieldStatus.textContent = message;
+        const saved = AnnotaCardFields.get(item)?.values || {};
+        for (const field of this.annotationFields(this.keyForItem(item))) {
+            const control = colorFieldInputs[field.name]; if (!control) continue;
+            if (field.type === "ai") {
+                this.renderAIField(control, field, saved[field.name], item);
+                if (control._retry) AnnotaCardFields.updateFieldRetry(control._retry, item, field);
+            }
+            else if (control.dataset.dirty !== "true" && !control.contains(doc.activeElement) && doc.activeElement !== control) {
+                if (field.type === "multiselect") control.setValues(saved[field.name] || []);
+                else if (field.type === "check") control.checked = /^(true|yes|oui|1|x)$/i.test(String(saved[field.name] || ""));
+                else control.value = this.fieldDisplayValue(field, saved[field.name]);
+            }
         }
-    })();
+    };
+    container.appendChild(fieldStatus);
+    container._flushDraft = async () => {
+        if (colorFieldSaveTimer) { clearTimeout(colorFieldSaveTimer); colorFieldSaveTimer = null; }
+        if (Object.values(colorFieldInputs).some(control => control.dataset.dirty === "true")) await saveColorFields();
+    };
+    const manualGenerate=doc.createElement("button");manualGenerate.type="button";manualGenerate.className="annota-manual-generate-fields";
+    manualGenerate.textContent="Generate AI Fields";manualGenerate.hidden=true;
+    manualGenerate.addEventListener("click",async event=>{
+        event.preventDefault();event.stopPropagation();if(manualGenerate.disabled)return;manualGenerate.disabled=true;
+        try{await container._flushDraft();await this.requestAIFields(item);}catch(error){fieldError(error);}finally{refreshStructuredFields();manualGenerate.disabled=false;}
+    });
+    if (AnnotaCardFields) AnnotaCardFields.watch(container, refreshStructuredFields);
+    refreshStructuredFields();
+
+    container.appendChild(colorFieldsSection);
+    container.appendChild(manualGenerate);
 
     // Arrange the popup in the requested order.
     const preview = popup.querySelector(".preview");
@@ -6052,53 +6345,19 @@ verified =
             return heading;
         };
 
-        // 1. Colors, followed by the conversion button inside colorPanel.
-        if (comment) {
-            preview.insertBefore(colorPanel, comment);
-        }
-        else if (tags) {
-            preview.insertBefore(colorPanel, tags);
-        }
-        else {
-            preview.insertBefore(colorPanel, preview.firstChild);
-        }
-
-        // 2. Comment heading above Zotero's native comment editor.
-        if (comment) {
-            preview.insertBefore(
-                createSectionHeading("Comment"),
-                comment
-            );
-        }
-
-        // 3. Tags heading above Zotero's native Tags button.
-        if (tags) {
-            preview.insertBefore(
-                createSectionHeading("Tags"),
-                tags
-            );
-        }
-
-        // 4. Research themes and experiments after native Tags.
-        if (tags) {
-            tags.insertAdjacentElement("afterend", container);
-        }
-        else if (comment) {
-            comment.insertAdjacentElement("afterend", container);
-        }
-        else {
-            preview.appendChild(container);
-        }
+        this._orderAnnotationControls(preview, [colorPanel,
+            comment && createSectionHeading("Comment"), comment,
+            tags && createSectionHeading("Tags"), tags, container]);
     }
     log("Research panel restored for annotation " + annotation.id);
 },
 
-	// Pastilles du popup de Zotero. selection-popup.js les rend dans
-	// « .colors > .color-button », au même index que ANNOTATION_COLORS — donc au
-	// même index que Zotero.Annotations.COLORS, d'où notre propre liste. Nos
-	// champs étant injectés dans ce popup (CustomSections), on remonte jusqu'à
-	// lui. Un nombre de boutons inattendu = version qu'on ne sait pas lire :
-	// on renvoie null plutôt que d'associer des couleurs au hasard.
+	// Zotero's selection-popup.js renders native swatches as
+	// .colors > .color-button in ANNOTATION_COLORS order, matching
+	// Zotero.Annotations.COLORS. Injected CustomSections can walk
+	// up to the containing popup. If the button count is unexpected,
+	// return null instead of guessing which color a button represents.
+	// This prevents applying fields to the wrong annotation color.
 	readerColorButtons(node) {
 		try {
 			let root = node && node.parentNode;
@@ -6108,7 +6367,8 @@ verified =
 			}
 			if (!root || typeof root.querySelectorAll !== "function") return null;
 			let btns = Array.prototype.slice.call(
-				root.querySelectorAll(".colors .color-button"));
+				root.querySelectorAll(".annota-palette-picker button"));
+			if (!btns.length) btns = Array.prototype.slice.call(root.querySelectorAll(".colors .color-button"));
 			return btns.length === this.COLORS.length ? btns : null;
 		}
 		catch (e) {
@@ -6117,52 +6377,58 @@ verified =
 		}
 	},
 
-	// Valeurs mises de côté pour un passage donné (validité : 10 minutes).
-	// Zotero normalise le texte à l'enregistrement (retours à la ligne, césures,
-	// espaces) : une égalité stricte avec le texte vu au moment de la sélection
-	// échoue presque toujours. On compare donc une forme normalisée, puis un
-	// préfixe, et à défaut on retient une saisie très récente — le geste étant
-	// « je tape puis je clique une couleur » dans la foulée.
+	// Cache drafts per passage for ten minutes.
+	// Zotero normalizes line breaks, hyphenation and whitespace when
+	// saving, so strict comparison with selected text is unreliable.
+	// Compare normalized text, then a prefix, with a recent-draft
+	// fallback for the immediate type-then-click gesture.
+	// The saved draft is consumed only by the matching creation event.
 	_normText(t) {
 		return String(t || "")
-			.replace(/[\u00AD]/g, "")          // césures conditionnelles
-			.replace(/-\s*\n\s*/g, "")         // mots coupés en fin de ligne
+			.replace(/[\u00AD]/g, "")          // Conditional soft hyphens.
+			.replace(/-\s*\n\s*/g, "")         // Words split by end-of-line hyphenation.
 			.replace(/\s+/g, " ")
 			.trim()
 			.toLowerCase();
 	},
 
-	// consume=false : consulter sans effacer (pour décider s'il faut agir).
-	_matchPending(text, consume) {
+	// consume=false inspects a draft without removing it.
+	_matchPending(text, consume, item) {
 		let p = this._pendingFields;
 		if (!p) return null;
 		let age = Date.now() - p.ts;
 		if (age > 600000) { this._pendingFields = null; return null; }
 
 		let a = this._normText(p.text), b = this._normText(text);
+        if (typeof AnnotaInfrastructure !== "undefined") {
+            if (!item || !p.attachmentID || item.parentID !== p.attachmentID || a !== b || !a) return null;
+            if (p.libraryID !== undefined && p.libraryID !== item.libraryID) return null;
+            if (consume) this._pendingFields = null;
+            return p.values;
+        }
 		let how = "";
 		if (a && b && a === b) how = "texte identique";
 		else if (a && b && (a.startsWith(b.slice(0, 40)) || b.startsWith(a.slice(0, 40)))) {
-			how = "préfixe commun";
+			how = "Shared prefix";
 		}
-		else if (age < 60000) how = "saisie récente (" + Math.round(age / 1000) + " s)";
+		else if (age < 60000) how = "Recent draft (" + Math.round(age / 1000) + " s)";
 
 		if (!how) {
-			log("champs en attente non appliqués : le passage ne correspond pas");
+			log("Pending fields not applied: passage mismatch");
 			return null;
 		}
 		if (consume) {
-			this._pendingFields = null;   // consommé une seule fois
-			log("champs appliqués (" + how + ")");
+			this._pendingFields = null;   // Consume a matching draft once only.
+			log("Fields applied (" + how + ")");
 		}
 		return p.values;
 	},
 
-	peekPendingFields(text) { return this._matchPending(text, false); },
-	takePendingFields(text) { return this._matchPending(text, true); },
+	peekPendingFields(text, item) { return this._matchPending(text, false, item); },
+	takePendingFields(text, item) { return this._matchPending(text, true, item); },
 
-	// Y a-t-il au moins une valeur non vide ? Un formulaire laissé vierge ne
-	// doit pas déclencher une génération sur une couleur « à la demande ».
+	// Check for at least one populated value. An untouched form must
+	// not trigger generation for a Manual color.
 	_hasFilledValues(values) {
 		return !!values && Object.keys(values).some(k => String(values[k] || "").trim());
 	},
@@ -6172,7 +6438,10 @@ verified =
 			if (!Zotero.Reader || !Zotero.Reader.registerEventListener) return;
 			this._startAnnotationPopupMonitor();
 			this._selectionListener = (event) => {
+    this._hideCreationAddToNote(event);
     // Semantic color labels: independent of AI and custom fields.
+    try { if (typeof AnnotaPalette !== "undefined") AnnotaPalette.renderSelection(event); }
+    catch (e) { log("palette selection: " + e); }
     try { this._renderColorLabels(event); }
     catch (e) { log("renderColorLabels: " + e); }
     // Optional research annotation fields.
@@ -6181,13 +6450,13 @@ verified =
     // Existing AI/custom-fields functionality.
     try { this._renderSelectionForm(event); }
     catch (e) { log("renderTextSelectionPopup: " + e); }
-				// « Ask Annota » : la sélection part dans la discussion.
+				// Ask ResearchAnnotator transfers the selection into Chat.
 				try { if (AnnotaChat) AnnotaChat.renderAskButton(event); }
 				catch (e) { log("renderAskButton: " + e); }
 			};
 			Zotero.Reader.registerEventListener(
-				"renderTextSelectionPopup", this._selectionListener, "annota@equiriconi");
-			log("Formulaire de sélection enregistré");
+				"renderTextSelectionPopup", this._selectionListener, "researchannotator@pino");
+			log("Selection form registered");
 		}
 		catch (e) {
 			log("registerSelectionForm: " + e);
@@ -6195,6 +6464,9 @@ verified =
 	},
 
 	unregisterSelectionForm() {
+        if (this._annotationPopupScanTimer) { clearInterval(this._annotationPopupScanTimer); this._annotationPopupScanTimer = null; }
+        for (const timer of this._paperNoteSyncTimers?.values() || []) clearTimeout(timer);
+        this._paperNoteSyncTimers?.clear();
 		try {
 			if (this._selectionListener && Zotero.Reader
 					&& Zotero.Reader.unregisterEventListener) {
@@ -6204,41 +6476,130 @@ verified =
 		}
 		catch (e) { /* ignore */ }
 		this._selectionListener = null;
+		// Restore the native creation action when this extension is disabled.
+		for (const reader of Zotero.Reader?._readers || []) {
+			try { reader._iframeWindow?.document?.getElementById("annota-creation-actions-style")?.remove(); }
+			catch (e) { /* Reader document may already have closed. */ }
+		}
 	},
 
-	// Le lecteur de Zotero réserve des touches SEULES à ses raccourcis : « r » et
-	// « l » lancent la lecture vocale, « h » et « u » annotent, l'espace met en
-	// pause. Il les écoute en PHASE DE CAPTURE sur la fenêtre
-	// (keyboard-manager.js : addEventListener('keydown', …, true)), donc bien
-	// avant que la frappe n'atteigne nos champs : aucun stopPropagation posé
-	// sur le formulaire ne peut arriver à temps.
+	// The reader reserves unmodified keys for shortcuts, including
+	// "l" start text-to-speech, "h" and "u" annotate, and Space pauses
+	// pause. Its capture-phase window listener runs before events
+	// reach extension controls, so stopping propagation on the form
+	// cannot protect typing from that listener by itself.
+	// The workaround must satisfy the reader's text-box test.
 	//
-	// Sa seule échappatoire est le test isTextBox(event.target), qui vaut
+	// The reader's isTextBox(event.target) guard recognizes
 	// (lib/utilities.js) :
 	//     ['INPUT'].includes(node.nodeName) && node.type === 'text'
 	//         || node.getAttribute('contenteditable') === 'true'
 	//
-	// Autrement dit un <input type="text"> est épargné, mais PAS un
-	// <textarea>, ni un <select>, ni une case à cocher — d'où une lecture
-	// vocale déclenchée en tapant une paraphrase contenant un « r », et jamais
-	// en remplissant le titre. On coche donc la seconde condition : l'attribut
-	// contenteditable est inerte sur un contrôle de formulaire, mais il suffit
-	// à faire reconnaître le champ comme zone de saisie.
-	// Suppr / Retour arrière SUPPRIMENT l'annotation sélectionnée. Le garde-fou
-	// est ici différent de celui des lettres (keyboard-manager.js) :
+	// text inputs but not textarea, select or checkbox controls.
+	// Without protection, typing ordinary text can trigger reader
+	// actions such as speech playback. Mark controls contenteditable:
+	// it is inert on native form controls but makes the reader
+	// recognize them as editable targets.
+	// This shields input without replacing the reader's keyboard manager.
+	// Delete and Backspace can remove the selected annotation. Their
+	// guard differs from the single-letter shortcut guard:
 	//     if (event.target.closest('input, .label-popup') || …) return;
-	// « input » couvre nos champs texte et nos cases à cocher, mais PAS un
-	// <textarea> — donc corriger une faute dans une paraphrase effaçait le
-	// surlignage précédent, resté sélectionné.
+	// inputs cover text controls and checkboxes, but not a textarea,
+	// so correcting a paragraph could delete the previously selected
+	// highlight.
 	//
-	// La seule accroche disponible est donc la classe .label-popup, portée par
-	// le conteneur du formulaire : closest() la trouve depuis n'importe quel
-	// champ. Elle vient avec sa mise en forme (position:absolute, left:-9999px,
-	// padding:16px, pointeur en pseudo-éléments) qui expédierait le formulaire
-	// hors écran : on la neutralise par une feuille de style à nous. Aucun
-	// effet de bord ailleurs — focus-manager.js teste .selection-popup, que
-	// notre conteneur satisfait déjà par son emplacement.
+	// Use the available .label-popup ancestor hook on the form wrapper
+	// so closest() recognizes every control. Its native positioning,
+	// padding and pointer pseudo-elements would otherwise put our form
+	// off screen, so neutralize those styles in the extension stylesheet.
+	// The required ancestor and placement conditions are otherwise
+	// side effects elsewhere: focus-manager.js tests .selection-popup, which
+	// already satisfied by the existing container.
 	FORM_CLASS: "label-popup annota-fields",
+
+	_styleStructuredField(row, field) {
+		this._ensureStructuredFieldStyles(row.ownerDocument);
+		row.classList.add("annota-structured-field");
+		row.dataset.fieldType = field.type;
+		row.dataset.fieldScope = field.scope === "global" ? "Global" : "Color";
+	},
+
+    _orderAnnotationControls(parent, controls) {
+        for (const control of controls) if (control) parent.appendChild(control);
+    },
+	_ensureAnnotationInterfaceStyles(doc) {
+		if (!doc?.getElementById || doc.getElementById("annota-interface-style")) return;
+		const style = doc.createElement("style"); style.id = "annota-interface-style";
+		style.textContent = ".selection-popup,.annotation-popup{width:min(360px,calc(100vw - 24px))!important;box-sizing:border-box!important;" +
+            "padding:8px!important;max-height:75vh!important;min-height:0!important;overflow:auto!important;overflow-x:hidden!important;" +
+            "max-width:calc(100vw - 24px)!important;overscroll-behavior:contain;}" +
+            ".annotation-popup>.preview{width:100%;min-width:0;box-sizing:border-box;}" +
+            ".selection-popup input,.selection-popup textarea,.selection-popup select,.annotation-popup input,.annotation-popup textarea," +
+            ".annotation-popup select{box-sizing:border-box;min-width:0;max-width:100%;}" +
+            ".selection-popup .comment,.annotation-popup .comment{overflow-wrap:anywhere;}" +
+			".selection-popup .annota-fields,.annotation-popup .annota-fields{font:12px/1.4 sans-serif;gap:4px;}" +
+			".annota-native-comment{display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:600;}" +
+			".annota-native-comment-input{font:12px/1.4 sans-serif;width:100%;box-sizing:border-box;resize:vertical;" +
+			"background:transparent;color:inherit;border:1px solid GrayText;border-radius:4px;padding:4px 6px;}" +
+			".annota-palette-picker{display:flex;flex-wrap:wrap;gap:5px;margin:3px 0;}" +
+            ".annota-color-button{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:0;white-space:normal;" +
+            "overflow-wrap:anywhere;cursor:pointer;transform:rotate(var(--annota-button-rotation,0deg));transition:filter .12s,box-shadow .12s;}" +
+            ".annota-color-button::before{content:'';display:inline-block;width:9px;height:9px;flex:none;border-radius:2px;" +
+            "background:var(--annota-swatch);border:1px solid rgba(255,255,255,.8);}" +
+            ".annota-color-button:hover{filter:brightness(1.05);box-shadow:0 0 0 2px rgba(105,155,210,.5);}" +
+            ".annota-color-button:focus-visible{outline:2px solid Highlight!important;outline-offset:3px!important;}" +
+            ".annota-color-button:active{filter:brightness(.9);box-shadow:inset 0 1px 3px rgba(0,0,0,.5);}" +
+            ".annota-palette-picker[data-layout=single] .annota-color-button,.annota-palette-picker[data-layout=slanted] .annota-color-button," +
+            ".annota-palette-picker[data-layout=vertical] .annota-color-button{white-space:nowrap;overflow-wrap:normal;word-break:normal;flex:none;max-width:none;font-family:sans-serif;font-weight:400;}" +
+            ".annota-palette-picker[data-layout=stack]>.annota-color-button{justify-content:flex-start;}" +
+            ["single", "slanted", "vertical"].flatMap(layout => [".selection-popup", ".annotation-popup"].map(selector => selector + "[data-annota-color-layout=" + layout + "]"))
+                .join(",") + "{width:min(var(--annota-color-popup-width,360px),calc(100vw - 24px))!important;}";
+		(doc.head || doc.documentElement).appendChild(style);
+	},
+	_ensureStructuredFieldStyles(doc) {
+		if (doc.getElementById("annota-structured-field-style")) return;
+		const style = doc.createElement("style");
+		style.id = "annota-structured-field-style";
+		style.textContent = ".annota-structured-field{box-sizing:border-box;min-width:0;width:100%;"
+			+ "border:1px solid rgba(105,125,146,.3);border-radius:5px;padding:4px 5px;"
+			+ "background:rgba(105,125,146,.07);color:inherit;gap:3px !important;}"
+			+ ".annota-structured-field[data-field-type=ai]{border-color:rgba(80,139,134,.35);background:rgba(80,139,134,.07);}"
+			+ ".annota-structured-field>label,.annota-structured-field>.annota-card-label,"
+			+ ".annota-structured-field>span{font-size:11px;font-weight:600;opacity:.9 !important;}"
+			+ ".annota-structured-field input:not([type=checkbox]),.annota-structured-field textarea,"
+			+ ".annota-structured-field select{color:inherit !important;background:transparent !important;"
+			+ "border-color:rgba(128,128,128,.25) !important;padding:3px 4px !important;}"
+			+ ".annota-structured-field .annota-popup-ai,.annota-structured-field .annota-card-ai,"
+			+ ".annota-structured-field .annota-creation-ai{white-space:pre-wrap;overflow-wrap:anywhere;"
+			+ "font-size:12px;line-height:1.35;opacity:1 !important;}"
+			+ ".annota-structured-field .annota-creation-ai{border:0 !important;padding:0 !important;background:transparent !important;}"
+			+ ".annota-structured-field code{font-size:.95em;}"
+			+ ".annota-structured-field{position:relative;}.annota-structured-field::after{content:attr(data-field-scope);"
+			+ "position:absolute;right:5px;top:4px;font-size:9px;opacity:.55;pointer-events:none;}"
+			+ ".annota-structured-field>label,.annota-structured-field>.annota-card-label,.annota-structured-field>span{padding-right:32px;}"
+			+ ".annota-field-chips{display:flex;flex-wrap:wrap;gap:3px;}.annota-field-chip{font:inherit;font-size:11px;"
+			+ "padding:1px 5px;border:1px solid rgba(128,128,128,.35);border-radius:9px;background:transparent;color:inherit;}"
+			+ ".annota-multiselect{min-width:0;}.annota-field-chips{margin-bottom:3px;}"
+			+ ".annota-field-chip{background:rgba(80,135,190,.16);border-color:rgba(100,140,180,.65);padding:2px 6px;}"
+			+ ".annota-field-suggestions{display:flex;flex-direction:column;gap:0;overflow:auto;overscroll-behavior:contain;"
+			+ "background:Canvas;color:CanvasText;border:1px solid GrayText;border-radius:5px;"
+			+ "box-shadow:0 3px 10px rgba(0,0,0,.22);font:12px/1.4 sans-serif;padding:3px;}"
+			+ ".annota-field-suggestions[hidden]{display:none !important;}"
+			+ ".annota-field-option,.annota-field-create{display:flex;align-items:center;min-width:0;}"
+			+ ".annota-field-option>[role=gridcell]:first-child,.annota-field-create>[role=gridcell]{flex:1;min-width:0;}"
+			+ ".annota-field-suggestions .annota-dismiss-suggestion{width:24px;padding:3px;text-align:center;cursor:pointer;}"
+			+ ".annota-dismiss-suggestion::before{content:'\\00d7';font-size:15px;}"
+			+ ".annota-field-suggestions button:focus-visible{outline:2px solid Highlight;outline-offset:-2px;}"
+			+ ".annota-field-suggestions button{display:block;width:100%;text-align:left;white-space:normal;"
+			+ "overflow-wrap:anywhere;font:inherit;color:inherit;background:transparent;border:0;border-radius:3px;padding:5px 7px;}"
+			+ ".annota-field-suggestions button:hover,.annota-field-suggestions [aria-selected=true]{background:Highlight;color:HighlightText;}"
+			+ ".annota-field-suggestions .annota-field-create{border-top:1px solid GrayText;border-radius:0;margin-top:3px;font-weight:600;}"
+			+ ".annota-field-empty{padding:5px 7px;}.annota-field-chip:focus-visible{outline:2px solid Highlight;outline-offset:1px;}"
+			+ "@media(prefers-color-scheme:dark){.annota-structured-field{background:rgba(130,155,180,.10);"
+			+ "border-color:rgba(150,170,190,.32);}.annota-structured-field[data-field-type=ai]{"
+			+ "background:rgba(100,165,158,.10);border-color:rgba(115,180,173,.35);}}";
+		(doc.head || doc.documentElement).appendChild(style);
+	},
 
 	_ensureFormStyles(doc) {
 		try {
@@ -6260,57 +6621,69 @@ verified =
 	},
 
 	_shieldFromReaderShortcuts(el, type) {
-		if (type === "text") return;      // déjà reconnu tel quel
+		if (type === "text") return;      // Already recognized without additional protection.
 		try { el.setAttribute("contenteditable", "true"); }
 		catch (e) { /* ignore */ }
 	},
 
-	_renderSelectionForm({ doc, params, append }) {
+	_hideCreationAddToNote({ doc }) {
+		if (!doc || doc.getElementById("annota-creation-actions-style")) return;
+		const style = doc.createElement("style");
+		style.id = "annota-creation-actions-style";
+		// Native reader selection-popup.js: enableAddToNote renders this direct
+		// child. Scope to creation; annotation menus and note editors stay intact.
+		style.textContent = ".selection-popup > button.toolbar-button.wide-button{display:none !important;}";
+		(doc.head || doc.documentElement).appendChild(style);
+	},
+
+	_renderSelectionForm({ doc, params, append, reader }) {
+		this._hideCreationAddToNote({ doc });
 		if (!doc || !append) return;
 		let colors = this.colorsWithFields();
 		if (!colors.length) return;
 		let text = String((params && params.annotation && params.annotation.text) || "").trim();
 		if (!text) return;
 
-		// Le popup peut être re-rendu pendant la sélection, et l'on passe d'un
-		// groupe à l'autre : les valeurs déjà tapées survivent aux deux.
-		let values = (this._pendingFields && this._pendingFields.text === text)
-			? Object.assign({}, this._pendingFields.values) : {};
-		let current = (this._pendingFields && this._pendingFields.text === text
-				&& this._pendingFields.color)
-			? this._pendingFields.color : this.defaultFieldColor();
+		// The reader can rerender the popup or switch color groups;
+		// retain typed values through both transitions.
+		const attachmentID = reader?.itemID || reader?._item?.id;
+        const sameDraft = this._pendingFields?.text === text &&
+            (typeof AnnotaInfrastructure === "undefined" || this._pendingFields.attachmentID === attachmentID) ? this._pendingFields : null;
+        let values = Object.assign({}, sameDraft?.values || {});
+        const colorDrafts = Object.assign({}, sameDraft?.byColor || {});
+        let current = sameDraft?.color || this.defaultFieldColor();
 
-		// Pas de largeur imposée : le formulaire épouse le popup. Un min-width
-		// débordait du cadre, les champs sortaient de la fenêtre.
+		// Do not force form width. A minimum width previously caused
+		// controls to overflow their popup frame.
 		this._ensureFormStyles(doc);
 		let wrap = doc.createElement("div");
-		// Voir FORM_CLASS : c'est ce qui empêche Suppr d'effacer l'annotation.
+		// See FORM_CLASS: it prevents Delete from removing the annotation.
 		wrap.setAttribute("class", this.FORM_CLASS);
-		wrap.style.cssText = "display:flex;flex-direction:column;gap:6px;"
+		wrap.style.cssText = "display:flex;flex-direction:column;gap:4px;"
 			+ "width:100%;max-width:100%;box-sizing:border-box;padding:2px 0;";
 
-		// Filet secondaire : arrête les écouteurs de PHASE REMONTANTE. Insuffisant
-		// à lui seul contre le lecteur (voir _shieldFromReaderShortcuts), mais
-		// utile face au reste de Zotero.
+		// Also stop bubbling-phase listeners as a secondary protection.
+		// This alone cannot block capture listeners; see the shortcut shield.
+		// useful alongside the rest of Zotero.
 		for (let type of ["keydown", "keypress", "keyup"]) {
 			wrap.addEventListener(type, e => e.stopPropagation());
 		}
 
-		// Style commun, aligné sur le thème du lecteur (couleurs héritées).
+		// Shared style inherits the reader theme.
 		const FIELD_CSS = "width:100%;max-width:100%;box-sizing:border-box;"
 			+ "font:inherit;font-size:12px;line-height:1.3;padding:4px 6px;"
 			+ "border:1px solid rgba(128,128,128,.45);border-radius:4px;"
 			+ "background:rgba(128,128,128,.12);color:inherit;outline:none;";
 		const LABEL_CSS = "font-size:11px;opacity:.65;";
 
-		let header = doc.createElement("div");     // libellé de la couleur en cours
+		let header = doc.createElement("div");     // Current semantic color label.
 		header.style.cssText = "display:none;align-items:center;gap:5px;width:100%;"
 			+ "font-size:11px;font-weight:600;letter-spacing:.01em;";
 		let picker = doc.createElement("div");     // repli : nos propres pastilles
 		picker.style.cssText = "display:none;align-items:center;gap:4px;"
 			+ "flex-wrap:wrap;width:100%;";
-		let body = doc.createElement("div");       // groupe de champs courant
-		body.style.cssText = "display:flex;flex-direction:column;gap:6px;width:100%;";
+		let body = doc.createElement("div");       // current field group
+		body.style.cssText = "display:flex;flex-direction:column;gap:4px;width:100%;";
 		let hint = doc.createElement("div");
 		hint.style.cssText = "display:flex;align-items:center;justify-content:center;"
 			+ "gap:5px;font-size:10px;line-height:1.3;text-align:center;";
@@ -6324,16 +6697,16 @@ verified =
 			return c ? c.name : hex;
 		};
 
-		// Le pied du formulaire nomme la pastille à cliquer, et la montre : dans
-		// une rangée de huit ronds, une couleur se reconnaît plus vite qu'elle
-		// ne se lit. Il sert aussi à dire qu'une couleur n'a rien de configuré,
-		// plutôt que de laisser un formulaire vide sans explication.
+		// The form footer identifies and displays the swatch to click;
+		// in a row of colored circles, visual identification is faster
+		// than reading a shade name. Also explain unconfigured colors
+		// instead of leaving an unexplained empty form.
 		const SWATCH_CSS = "width:9px;height:9px;flex:none;border-radius:2px;"
 			+ "display:inline-block;border:1px solid rgba(128,128,128,.55);";
 
-		// Le libellé nomme ce qu'on est en train de faire (« Objection »), quand
-		// le pied nomme la pastille à cliquer (« Red ») : deux informations
-		// différentes. Sans libellé, l'en-tête disparaît — le popup est étroit.
+		// The heading names the semantic task; the footer identifies
+		// the native swatch. These are distinct pieces of information.
+		// Hide an empty heading to conserve the narrow popup's space.
 		const renderHeader = (hex) => {
 			let label = this.labelForColor(hex);
 			header.textContent = "";
@@ -6360,24 +6733,48 @@ verified =
 			hint.appendChild(msg);
 		};
 
-		// Mémorisé au fil de la frappe : la validation se fait ensuite en
-		// cliquant une couleur dans le popup de Zotero.
+		// Save drafts during typing, before annotation creation occurs
+		// through a native color click.
 		const sync = () => {
-			this._pendingFields = { text, values, ts: Date.now(), color: current };
+			this._pendingFields = { text, values: { ...values }, ts: Date.now(), color: current, byColor: colorDrafts, attachmentID: reader?.itemID || reader?._item?.id, libraryID: reader?._item?.libraryID };
 		};
 
 		const renderGroup = (hex) => {
+            if (typeof AnnotaInfrastructure !== "undefined" && current !== hex) {
+                colorDrafts[current] = Object.fromEntries(this.fieldsForColor(current).filter(f => Object.hasOwn(values, f.name)).map(f => [f.name, values[f.name]]));
+                for (const field of this.fieldsForColor(current)) delete values[field.name];
+                Object.assign(values, colorDrafts[hex] || {});
+            }
 			current = hex;
 			body.textContent = "";
-			let fields = this.visibleFieldsFor(hex);
+			let fields = this.annotationFields(hex);
 			for (let f of fields) {
 				let row = doc.createElement("div");
+				this._styleStructuredField(row, f);
 				let lab = doc.createElement("label");
 				lab.textContent = f.label;
 				let el;
 
-				if (f.type === "check") {
-					// Case à cocher : libellé à droite, sur une seule ligne.
+// AI fields are displayed immediately but are not manually editable.
+if (f.type === "ai") {
+row.style.cssText = "display:flex;flex-direction:column;gap:2px;width:100%;";
+lab.style.cssText = LABEL_CSS;
+let aiValue = doc.createElement("div");
+aiValue.className = "annota-creation-ai";
+aiValue.textContent = "Not generated yet";
+aiValue.style.cssText = FIELD_CSS + "opacity:.65;";
+row.appendChild(lab);
+row.appendChild(aiValue);
+body.appendChild(row);
+continue;
+}
+
+if (f.type === "multiselect") {
+    el = this.createMultiSelect(doc, f, values[f.name], () => { values[f.name] = el.readValues(); sync(); });
+    row.appendChild(lab); row.appendChild(el); body.appendChild(row); continue;
+}
+if (f.type === "check") {
+					// Checkbox labels appear to the right on one line.
 					row.style.cssText = "display:flex;align-items:center;gap:6px;width:100%;";
 					el = doc.createElement("input");
 					el.type = "checkbox";
@@ -6416,8 +6813,8 @@ verified =
 				}
 
 				this._shieldFromReaderShortcuts(el, f.type);
-				// Chaque champ écrit dans le tampon commun : ce qui est tapé pour
-				// une couleur n'est pas perdu si l'on regarde une autre.
+				// Each field writes to a shared draft so values entered for one
+				// color survive temporarily inspecting another color.
 				let read = (f.type === "check")
 					? () => (el.checked ? "true" : "")
 					: () => String(el.value || "");
@@ -6432,26 +6829,29 @@ verified =
 		};
 
 		append(wrap);
+		this._ensureAnnotationInterfaceStyles(doc);
+		const nativeCapture = doc.querySelector?.(".selection-popup .annota-research-capture");
+		if (nativeCapture) this._orderAnnotationControls(wrap, [nativeCapture, body, hint]);
 
-		// Voie normale : le survol des pastilles de Zotero désigne la couleur.
-		// Aucun clic supplémentaire — le geste reste « je survole, je tape, je
-		// clique ». Le clic, lui, appartient à Zotero : il crée l'annotation.
+		// Normal path: native swatch hover designates the color.
+		// Keep the gesture hover, type, click without another confirmation.
+		// Zotero owns the click and creates the annotation.
 		let btns = this.readerColorButtons(wrap);
 		if (btns) {
 			this.COLORS.forEach((c, i) => {
 				let btn = btns[i];
 				if (!btn) return;
-				// Y compris les couleurs sans champ : le survol répond alors
-				// « rien de configuré » au lieu de laisser le groupe précédent,
-				// ce qui laissait croire que ces champs seraient enregistrés.
+				// Include unconfigured colors so their hover clears the preceding
+				// form and explains that no fields are configured.
+				// Otherwise users may think the preceding values will be saved.
 				let show = () => { if (current !== c.hex) renderGroup(c.hex); };
 				btn.addEventListener("mouseenter", show);
-				btn.addEventListener("focus", show);   // navigation au clavier
+				btn.addEventListener("focus", show);   // keyboard navigation
 			});
-			log("groupes de champs pilotés par les pastilles du lecteur");
+			log("Field groups follow native reader swatches");
 		}
 		else {
-			// Repli : structure du popup non reconnue. Plutôt que de deviner,
+			// Fallback when the popup structure cannot be recognized; do not guess.
 			// on affiche nos propres pastilles.
 			picker.style.display = "flex";
 			let lab = doc.createElement("span");
@@ -6472,19 +6872,19 @@ verified =
 				});
 				picker.appendChild(sw);
 			}
-			log("pastilles du lecteur non reconnues : sélecteur de repli affiché");
+			log("Native swatches not recognized; fallback picker shown");
 		}
 
 		renderGroup(current);
 	},
 
-	// ---- Menu contextuel des annotations du lecteur ----
+	// Reader annotation context menu.
 	//
-	// API officielle de Zotero (reader.js) : registerEventListener avec le type
-	// « createAnnotationContextMenu ». Permet de viser UNE annotation précise
-	// depuis le panneau latéral, plutôt que tout un document.
-	// params.ids contient des CLÉS d'items (reader.js : annotation.key =
-	// annotation.id), pas des identifiants numériques.
+	// Use Zotero's official createAnnotationContextMenu reader event
+	// to target a specific annotation from the sidebar,
+	// rather than an entire document.
+	// params.ids contains item keys, not numeric IDs; reader.js maps
+	// annotation.key to annotation.id.
 
 	_readerListener: null,
 
@@ -6496,6 +6896,9 @@ verified =
 					let { reader, params, append } = event;
 					let keys = (params && params.ids) || [];
 					if (!keys.length) return;
+                    if(Annota.network)append({label:'Connect Research Evidence…',onCommand:()=>{
+                        Promise.resolve().then(async()=>{const attachment=await Zotero.Items.getAsync(reader.itemID);const refs=keys.slice(0,24).map(key=>({kind:'annotation',key,library:AnnotaData.libraryIdentity(Zotero.Libraries.get(attachment.libraryID))}));await Annota.network.openSelection(Zotero.getMainWindow(),refs);}).catch(error=>{log(error);Services.prompt.alert(null,'Research Network',String(error.message||error));});
+                    }});
 					append({
 						label: keys.length > 1
 							? Annota.t("menu.reader.many", { n: keys.length })
@@ -6510,7 +6913,7 @@ verified =
 							label: Annota.t("menu.reader.spell"),
 							onCommand: () => {
 								Annota.spellReaderAnnotations(reader, keys)
-									.catch(e => log("orthographe : " + e));
+									.catch(e => Services.prompt.alert(window,"ResearchAnnotator",String(e.message||e)));
 							}
 						});
 					}
@@ -6529,8 +6932,8 @@ verified =
 				}
 			};
 			Zotero.Reader.registerEventListener(
-				"createAnnotationContextMenu", this._readerListener, "annota@equiriconi");
-			log("Menu du lecteur enregistré");
+				"createAnnotationContextMenu", this._readerListener, "researchannotator@pino");
+			log("Reader menu registered");
 		}
 		catch (e) {
 			log("registerReaderMenu: " + e);
@@ -6549,8 +6952,8 @@ verified =
 		this._readerListener = null;
 	},
 
-	// Valeurs des champs d'une annotation écrite par Annota, pour les
-	// réafficher dans sa carte du lecteur (card-fields.js).
+	// Structured annotation values displayed again by the reader
+	// card through card-fields.js.
 	rememberFields(item, built, comment) {
 		if (!AnnotaCardFields || !built || !built.values) return;
 		if (!Object.keys(built.values).length) return;
@@ -6558,7 +6961,7 @@ verified =
 		catch (e) { log("rememberFields: " + e); }
 	},
 
-	// ---- Orthographe et grammaire (spell.js) ----
+	// ---- Spelling and grammar (spell.js) ----
 
 	async spellSelection(window) {
 		if (!AnnotaSpell) return;
@@ -6581,14 +6984,14 @@ verified =
 		await AnnotaSpell.review(Zotero.getMainWindow(), targets);
 	},
 
-	// Exécute le prompt sur les annotations visées dans le lecteur.
-	// L'action étant explicite, elle écrase le commentaire existant : c'est ce
-	// qui permet d'écrire sa paraphrase à la main puis de la faire mettre en
-	// forme (mode « à la demande » + {{comment}}).
+	// Run explicit generation for the targeted reader annotations.
+	// The historical entry point now uses shared structured generation:
+	// manual values and native Comment are preserved rather than
+	// replaced by an unconstrained model response.
 	async runOnReaderAnnotations(reader, keys, opts = {}) {
 		let notReady = this.providerReadyError();
 		if (notReady) {
-			toast("Annota", notReady, "error");
+			toast("ResearchAnnotator", notReady, "error");
 			return;
 		}
 		let anns = [];
@@ -6601,14 +7004,14 @@ verified =
 			}
 		}
 		catch (e) {
-			log("runOnReaderAnnotations: résolution des clés : " + e);
+			log("runOnReaderAnnotations: key resolution: " + e);
 			return;
 		}
 		if (!anns.length) return;
 		return this.processAnnotations(anns, { overwrite: true, fields: opts.fields });
 	},
 
-	// ---- Menu contextuel (une entrée par fenêtre principale) ----
+	// Context menu: one integration per main window.
 
 	_windows: new Map(),
 
@@ -6629,6 +7032,8 @@ verified =
 
 	addToWindow(window) {
 		try {
+			if (typeof AnnotaResearchNotes !== "undefined") AnnotaResearchNotes.addToWindow(window);
+			if (typeof AnnotaExplorer !== "undefined") AnnotaExplorer.addToWindow(window);
 			if (this._windows.has(window)) return;
 			let doc = window.document;
 			let itemmenu = doc.getElementById("zotero-itemmenu");
@@ -6636,7 +7041,7 @@ verified =
 
 			let menu = doc.createXULElement("menu");
 			menu.id = "annota-itemmenu";
-			menu.setAttribute("label", "Annota");
+			menu.setAttribute("label", "ResearchAnnotator");
 
 			let popup = doc.createXULElement("menupopup");
 
@@ -6644,7 +7049,7 @@ verified =
 			missing.setAttribute("label", this.t("menu.missing"));
 			missing.addEventListener("command", () => {
 				Annota.runBatch(window, { overwrite: false })
-					.catch(e => log("runBatch: " + e));
+					.catch(e => Services.prompt.alert(window,"ResearchAnnotator",String(e.message||e)));
 			});
 			popup.appendChild(missing);
 
@@ -6656,9 +7061,9 @@ verified =
 			});
 			popup.appendChild(all);
 
-			// Reprise ciblée : ne touche que les annotations marquées en échec,
-			// pour rattraper une coupure réseau ou un modèle indisponible sans
-			// tout régénérer.
+			// Target retries to annotations marked as failed, recovering a
+			// network interruption or unavailable model without regenerating
+			// all completed values.
 			let retry = doc.createXULElement("menuitem");
 			retry.setAttribute("label", this.t("menu.retry"));
 			retry.addEventListener("command", () => {
@@ -6667,18 +7072,18 @@ verified =
 			});
 			popup.appendChild(retry);
 
-			// Orthographe et grammaire : commentaires et notes de la sélection.
+			// Spelling/grammar review for selected Comments and notes.
 			if (AnnotaSpell && AnnotaSpell.available()) {
 				popup.appendChild(doc.createXULElement("menuseparator"));
 				let spell = doc.createXULElement("menuitem");
 				spell.setAttribute("label", this.t("menu.spell"));
 				spell.addEventListener("command", () => {
-					Annota.spellSelection(window).catch(e => log("orthographe : " + e));
+					Annota.spellSelection(window).catch(e => log("Spelling: " + e));
 				});
 				popup.appendChild(spell);
 			}
 
-			// Notes : surlignages glissés avec l'ancien gabarit, réduits à leur
+			// Historical dragged highlight templates are reduced to their
 			// citation (citelink.js).
 			if (AnnotaCiteLink) {
 				popup.appendChild(doc.createXULElement("menuseparator"));
@@ -6693,13 +7098,13 @@ verified =
 					let mi = doc.createXULElement("menuitem");
 					mi.setAttribute("label", this.t(key));
 					mi.addEventListener("command", () => {
-						Promise.resolve().then(run).catch(e => log("réduction des notes : " + e));
+						Promise.resolve().then(run).catch(e => Services.prompt.alert(window,"ResearchAnnotator",String(e.message||e)));
 					});
 					popup.appendChild(mi);
 				}
 			}
 
-			// Défilé des annotations sans champ, relance de l'IA sur des champs.
+			// Review annotations with missing fields and expose explicit AI completion.
 			if (AnnotaReview && AnnotaCardFields) {
 				popup.appendChild(doc.createXULElement("menuseparator"));
 				for (let [key, run] of [
@@ -6710,55 +7115,56 @@ verified =
 					let mi = doc.createXULElement("menuitem");
 					mi.setAttribute("label", this.t(key));
 					mi.addEventListener("command", () => {
-						Promise.resolve().then(run).catch(e => log("défilé : " + e));
+						Promise.resolve().then(run).catch(e => Services.prompt.alert(window,"ResearchAnnotator",String(e.message||e)));
 					});
 					popup.appendChild(mi);
 				}
 			}
 
-			menu.appendChild(popup);
+			for(const [label,run]of [['Research Workspace',()=>AnnotaWorkspace.open(window,'notes')],['Research Chat (selected notes as context)',async()=>{AnnotaChat.toggle(window,true);const instance=AnnotaChat.activeInstance(AnnotaChat._windows.get(window));if(!instance)throw Error('Open Research Chat and try again.');const scope=AnnotaResearchChat.selection(instance,'notes');instance.conv.groundedSources=scope;instance.conv.retrieval={...instance.conv.retrieval,evidenceMode:'notes'};AnnotaChat.touch(instance.conv);AnnotaChat.renderInstance(instance);}]]){const item=doc.createXULElement('menuitem');item.setAttribute('label',label);item.addEventListener('command',()=>Promise.resolve().then(run).catch(e=>Services.prompt.alert(window,'ResearchAnnotator',String(e.message||e))));popup.appendChild(item);}
+            menu.appendChild(popup);
 			itemmenu.appendChild(menu);
 
-			// Menu Outils : le défilé sur toute la bibliothèque.
+			// Tools entry reviews the entire selected library.
 			let tools = doc.getElementById("menu_ToolsPopup");
 			let toolsItem = null;
-			if (tools && AnnotaReview && AnnotaCardFields) {
+			if (tools && AnnotaReview && AnnotaCardFields && !this.workspace) {
 				toolsItem = doc.createXULElement("menuitem");
 				toolsItem.id = "annota-tools-review";
 				toolsItem.setAttribute("label", this.t("menu.review.lib"));
 				toolsItem.addEventListener("command", () => {
-					AnnotaReview.startReview(window, true).catch(e => log("défilé : " + e));
+					AnnotaReview.startReview(window, true).catch(e => log("Annotation review: " + e));
 				});
 				tools.appendChild(toolsItem);
 			}
 
-			// Masquer l'entrée quand la sélection ne peut porter aucune annotation.
-			let onShowing = () => { menu.hidden = !Annota.selectionIsRelevant(window); };
+			// Hide the entry when the selection cannot contain annotations.
+			let onShowing = () => { const selected=window.ZoteroPane.getSelectedItems();menu.hidden=!Annota.selectionIsRelevant(window);const canAnnotations=selected.some(i=>i.isRegularItem?.()||i.isFileAttachment?.()||i.isAnnotation?.());for(const node of [missing,all,retry])node.hidden=!canAnnotations;for(const node of popup.children)if([Annota.t('menu.review'),Annota.t('menu.refill'),Annota.t('menu.refill.undo')].includes(node.getAttribute('label')))node.hidden=!canAnnotations; };
 			itemmenu.addEventListener("popupshowing", onShowing);
 
 			let collToggle = null;
 			try { collToggle = this.addCollectionToggle(window); }
-			catch (e) { log("bouton replier les collections : " + e); }
+			catch (e) { log("Collection collapse button: " + e); }
 
 			this._windows.set(window, { menu, itemmenu, onShowing, toolsItem, collToggle });
-			log("Menu ajouté à la fenêtre");
+			log("Menu added to main window");
 		}
 		catch (e) {
 			log("addToWindow: " + e);
 		}
 	},
 
-	// ---- Replier ou déplier toutes les collections ----
+	// Expand or collapse all collections.
 	//
-	// Bouton à deux chevrons dans la barre au-dessus des collections. S'il y a
-	// des collections ouvertes dans la bibliothèque en cours, il les replie
-	// toutes (la bibliothèque reste ouverte) ; sinon, il déplie tout, comme
-	// la touche « + » de Zotero.
+	// The collections toolbar chevrons collapse open collections in
+	// the current library while leaving the library itself expanded;
+	// if none are open, expand them all.
+	// Zotero's "+" key.
 
 	COLL_ICONS: {
-		// Chevrons qui se rejoignent : replier.
+		// Converging chevrons: collapse.
 		collapse: "M5 3.5 8 6.5 11 3.5M5 12.5 8 9.5 11 12.5",
-		// Chevrons qui s'écartent : déplier.
+		// Outward chevrons indicate expansion.
 		expand: "M5 6.5 8 3.5 11 6.5M5 9.5 8 12.5 11 9.5"
 	},
 
@@ -6789,7 +7195,7 @@ verified =
 		};
 		b.addEventListener("mouseenter", refresh);
 		b.addEventListener("command", () => {
-			this.toggleCollections(window).then(refresh, e => log("replier les collections : " + e));
+			this.toggleCollections(window).then(refresh, e => log("Collapse collections: " + e));
 		});
 		if (add && add.nextSibling) bar.insertBefore(b, add.nextSibling);
 		else bar.appendChild(b);
@@ -6797,7 +7203,7 @@ verified =
 		return b;
 	},
 
-	// Arbre des collections et rang de la bibliothèque en cours.
+	// Collection tree and current library row index.
 	_collScope(window) {
 		let tree = window.ZoteroPane && window.ZoteroPane.collectionsView;
 		if (!tree || !tree._rowMap) return null;
@@ -6832,8 +7238,8 @@ verified =
 			await tree.expandLibrary(libraryID, true);
 			return;
 		}
-		// Comme collapseLibrary de Zotero, mais sans refermer la bibliothèque :
-		// du bas vers le haut, pour que les rangs restent valables.
+		// Like Zotero collapseLibrary, but keep the library expanded:
+		// work bottom-up so row indexes remain valid.
 		let last = row;
 		while (last + 1 < tree.rowCount) {
 			let r = tree.getRow(last + 1);
@@ -6853,6 +7259,9 @@ verified =
 	},
 
 	removeFromWindow(window) {
+		if(typeof AnnotaWorkspace!=="undefined")AnnotaWorkspace.removeFromWindow(window);
+		if (typeof AnnotaResearchNotes !== "undefined") AnnotaResearchNotes.close(window);
+		if (typeof AnnotaExplorer !== "undefined") AnnotaExplorer.close(window);
 		let rec = this._windows.get(window);
 		if (!rec) return;
 		try { rec.itemmenu.removeEventListener("popupshowing", rec.onShowing); } catch (e) {}
@@ -6870,29 +7279,29 @@ verified =
 		this._windows.clear();
 	},
 
-	// Nettoie la sortie du modèle (retire d'éventuels blocs de code / espaces superflus).
-	// Les modèles écrivent en Markdown même quand on le leur interdit. Le
-	// commentaire d'une annotation Zotero n'en comprend rien : « **risque** »
-	// s'affiche avec ses astérisques. On convertit donc vers les seules balises
-	// que Zotero rend — <b>, <i>, <u> — plutôt que de compter sur la consigne.
+	// Clean model output by removing code fences and excess whitespace.
+	// Models may return Markdown despite instructions. Zotero annotation
+	// rendering supports only a subset of tags; convert supported emphasis
+	// to b, i and u instead of trusting the prompt to enforce formatting.
+	// Leave native Comment separate from this structured presentation path.
 	demarkdown(s) {
-		// Code : les délimiteurs partent, le contenu reste.
+		// Remove code delimiters but retain their content.
 		s = s.replace(/`([^`\n]+)`/g, "$1");
-		// Gras avant italique : ** doit être consommé avant *.
+		// Parse bold before italic so double stars are consumed first.
 		s = s.replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<b>$1</b>");
 		s = s.replace(/(^|[^\w])__(?=\S)([\s\S]*?\S)__(?![\w])/g, "$1<b>$2</b>");
 		s = s.replace(/(^|[^*\w])\*(?=\S)([^*\n]*?\S)\*(?!\*)/g, "$1<i>$2</i>");
-		// Souligné Markdown : bordé de non-mots, sinon « nom_de_champ » y passe.
+		// Require word boundaries for Markdown underline to preserve field_names.
 		s = s.replace(/(^|[^\w_])_(?=\S)([^_\n]*?\S)_(?![\w_])/g, "$1<i>$2</i>");
-		// Titres et puces : pas de balise équivalente, on garde le texte.
+		// For headings and bullets, retain text without unsupported tags.
 		s = s.replace(/^#{1,6}\s+/gm, "");
 		s = s.replace(/^\s*[-*+]\s+/gm, "• ");
 		return s;
 	},
 
-	// Une valeur entièrement enveloppée dans une balise : le modèle a mis en
-	// forme un champ qui a déjà son propre format déclaré. On déshabille — la
-	// mise en forme appartient aux réglages, pas à la réponse.
+	// If a value is fully enclosed by formatting markup, strip that outer
+	// markup when the configured field already owns its formatting.
+	// Formatting belongs to the field definition rather than model output.
 	unwrapWholeTag(v) {
 		for (let i = 0; i < 2; i++) {
 			let m = String(v).match(/^<(b|i|u)>([\s\S]*)<\/\1>$/);
@@ -6911,45 +7320,48 @@ verified =
 	}
 };
 
-// ---- Cycle de vie du plugin (Zotero 7) ----
+// ---- Extension lifecycle (Zotero 7) ----
 
-// Discussion : défini par chat.js, chargé au démarrage. Reste nul si le
-// chargement échoue — les annotations n'en dépendent pas.
+// Chat is loaded at startup and stays null if loading fails;
+// annotation functionality does not depend on it.
 var AnnotaChat = null;
 
-// Textes de l'interface (i18n.js). Sans eux, Annota.t() rend la clé.
+// UI localization comes from i18n.js; without it, t() returns the key.
 var AnnotaI18n = null;
 
-// Orthographe et grammaire (spell.js, macOS) ; vérification pendant la
-// frappe dans les notes et les commentaires (spell-live.js).
+// Spelling/grammar service and live checking are provided by spell.js
+// and spell-live.js for notes and annotation Comments.
 var AnnotaSpell = null;
 var AnnotaSpellLive = null;
 
-// Champs de la couleur dans la carte d'annotation du lecteur (card-fields.js).
+// Per-color fields in reader annotation cards: card-fields.js.
 var AnnotaCardFields = null;
-// Lien d'une citation glissée dans une note vers son surlignage (citelink.js).
+// Navigate from a dragged note citation to its highlight: citelink.js.
 var AnnotaCiteLink = null;
 
-// Défilé des annotations sans champ et relance de l'IA (review.js).
+// Review missing annotation fields and request explicit AI: review.js.
 var AnnotaReview = null;
 var annotaLangObserver = null;
 
 function install() {}
 
 async function startup({ id, version, rootURI }) {
-	Annota.init({ id, version, rootURI });
+    migratePreferences();
+    Annota.init({ id, version, rootURI });
 	try { Services.scriptloader.loadSubScript(rootURI + "i18n.js"); }
 	catch (e) { log("i18n.js : " + e); }
-	Annota.registerNotifier();
+	try { Services.scriptloader.loadSubScript(rootURI + "palette.js"); }
+	catch (e) { log("Custom palette unavailable; native colors retained: " + e); }
+	try { Services.scriptloader.loadSubScript(rootURI + "data-manager.js"); }
+	catch (e) { log("Data management unavailable: " + e); }
 	Annota.registerReaderMenu();
-	Annota.registerSelectionForm();
 
 	try {
 		Services.scriptloader.loadSubScript(rootURI + "chat.js");
 		AnnotaChat.register();
 	}
 	catch (e) {
-		log("discussion indisponible : " + e);
+		log("Chat unavailable: " + e);
 		AnnotaChat = null;
 	}
 	try {
@@ -6957,62 +7369,120 @@ async function startup({ id, version, rootURI }) {
 		AnnotaCiteLink.start();
 	}
 	catch (e) {
-		log("lien citation → surlignage indisponible : " + e);
+		log("Citation navigation unavailable: " + e);
 		AnnotaCiteLink = null;
 	}
 	try { Services.scriptloader.loadSubScript(rootURI + "review.js"); }
 	catch (e) {
-		log("défilé et relance indisponibles : " + e);
+		log("Review/refill unavailable: " + e);
 		AnnotaReview = null;
 	}
 	try { Services.scriptloader.loadSubScript(rootURI + "spell.js"); }
 	catch (e) {
-		log("orthographe indisponible : " + e);
+		log("Spelling unavailable: " + e);
 		AnnotaSpell = null;
 	}
 	try {
 		Services.scriptloader.loadSubScript(rootURI + "card-fields.js");
-		AnnotaCardFields.register();
+		Services.scriptloader.loadSubScript(rootURI + "research-network.js");
+		Services.scriptloader.loadSubScript(rootURI + "note-presentation.js"); Annota.notePresentation=AnnotaNotePresentation;
+        Services.scriptloader.loadSubScript(rootURI + "infrastructure.js");
+        AnnotaInfrastructure.installStorage();
 	}
 	catch (e) {
-		log("champs de carte indisponibles : " + e);
+		log("Card fields unavailable: " + e);
 		AnnotaCardFields = null;
 	}
+	if (AnnotaCardFields) {
+		try {
+            if (typeof AnnotaData !== "undefined") {
+                try { await AnnotaData.recoverPendingImport(); AnnotaData.restoreGenerationStatus(); }
+                catch (error) {
+                    AnnotaData._recoveryError = error.message; AnnotaCardFields._maintenance = true;
+                    throw error;
+                }
+            }
+            if (typeof AnnotaPalette !== "undefined") await AnnotaPalette.migrateStorage();
+            if (typeof AnnotaData !== "undefined") AnnotaData.restoreGenerationStatus();
+            if (typeof AnnotaInfrastructure !== "undefined") {
+                await AnnotaInfrastructure.init();
+                AnnotaInfrastructure.installIntegrations();
+                AnnotaInfrastructure.jobs.register("structured-ai", async (payload, control, job) => {
+                    const item = await AnnotaInfrastructure.resolve(payload.annotation);
+                    const fields = payload.fieldIds.filter(id => !(job.checkpoint?.completedFieldIds || []).includes(id));
+                    try { await Annota.generateStructuredFields(item, { fieldIds: fields, regenerate: !!payload.regenerate, partial: true, control }); }
+                    finally { if(payload.capture&&Annota.captureEvidence)try{await Annota.captureEvidence.recordAICompletion(item,payload.capture,fields);}catch(_){log('Capture AI checkpoint could not be updated; undo remains conservative.');} }
+                    await control.progress(1);
+                }, { paid: true });
+                AnnotaInfrastructure.jobs.register("pdf-note", async (payload, control) => {
+                    const library = AnnotaData.resolveLibrary(payload.library);
+                    if (!library) throw Error("Library unavailable");
+                    const attachment = await AnnotaData.annotation(library.libraryID, payload.attachmentKey);
+                    control.check();
+                    if (!attachment?.isAttachment?.() || attachment.deleted) throw Error("PDF unavailable");
+                    await Annota._syncPaperResearchNote({ libraryID: library.libraryID, parentID: attachment.id, existingOnly: true });
+                    await control.progress(1);
+                });
+                Annota.backgroundJobs = AnnotaInfrastructure.jobs;
+                Annota.managedNotes = AnnotaInfrastructure.notes;
+                Services.scriptloader.loadSubScript(rootURI + "research-notes.js");
+                AnnotaResearchNotes.install();
+                Annota.researchNotes=AnnotaResearchNotes;
+                Services.scriptloader.loadSubScript(rootURI + "research-explorer.js");
+                AnnotaExplorer.install();
+                Annota.explorer = AnnotaExplorer;
+                AnnotaNetwork.install();
+                Services.scriptloader.loadSubScript(rootURI+'research-chat.js');
+                await AnnotaResearchChat.install();
+                Services.scriptloader.loadSubScript(rootURI+'color-mapper.js'); AnnotaColorMapper.install();
+                Services.scriptloader.loadSubScript(rootURI+'evidence-capture.js'); AnnotaEvidenceCapture.install();
+                Services.scriptloader.loadSubScript(rootURI+'research-chat-ui.js'); AnnotaResearchChatUI.install();
+                Services.scriptloader.loadSubScript(rootURI+'research-chat-window.js'); AnnotaChatWindow.install();
+            }
+            await Annota.migrateLegacyGlobalFields();
+        }
+        catch (e) { Annota._workspaceInitializationError=String(e);log("Global fields migration deferred; legacy data retained: " + e); }
+		AnnotaCardFields.register();
+	}
+    Annota.registerNotifier();
+    try { Services.scriptloader.loadSubScript(rootURI+"research-workspace.js");Annota.workspace=AnnotaWorkspace; }
+    catch(error){Annota._workspaceInitializationError=String(error);log("Workspace module initialization failed: "+error);Services.prompt.alert(null,"Research Workspace",String(error));}
+    Annota.registerSelectionForm();
 	try {
 		Services.scriptloader.loadSubScript(rootURI + "spell-live.js");
 		if (AnnotaSpell && AnnotaSpell.available()) AnnotaSpellLive.start();
 	}
 	catch (e) {
-		log("orthographe en direct indisponible : " + e);
+		log("Live spelling unavailable: " + e);
 		AnnotaSpellLive = null;
 	}
 
-	// Exposé pour le script du panneau de préférences (prompt par défaut, reset).
+	// Expose the extension API to the preferences script.
 	Zotero.Annota = Annota;
 
-	// Langue changée dans les réglages : menus et discussion suivent.
+	// Language changes refresh menus and Chat.
 	try {
-		annotaLangObserver = Zotero.Prefs.registerObserver("annota.uiLanguage",
-			() => { if (Annota) Annota.relocalize(); });
+annotaLangObserver = Zotero.Prefs.registerObserver("researchannotator.uiLanguage",
+				() => { if (Annota) Annota.relocalize(); });
 	}
 	catch (e) { log("observateur de langue : " + e); }
 
-	// L'identifiant du panneau sert au bouton « réglages » de la discussion.
+	// The registered preference-pane ID powers Chat's settings button.
 	Promise.resolve(Zotero.PreferencePanes.register({
-		pluginID: "annota@equiriconi",
+		pluginID: "researchannotator@pino",
 		src: rootURI + "preferences.xhtml",
-		scripts: [rootURI + "preferences.js"],
+		scripts: [rootURI + "preferences.js", rootURI + "preferences-data.js"],
 		stylesheets: [rootURI + "preferences.css"],
-		label: "Annota"
+		label: "ResearchAnnotator", image:rootURI+"research-settings.svg"
 	})).then(id => { if (Annota) Annota.prefPaneID = id; })
 		.catch(e => log("PreferencePanes.register: " + e));
 
-	// Fenêtres déjà ouvertes au moment de l'activation du plugin.
+	// Initialize main windows already open when the extension starts.
 	for (let window of Zotero.getMainWindows()) {
 		Annota.addToWindow(window);
 		if (AnnotaChat) {
 			try { AnnotaChat.addToWindow(window); }
-			catch (e) { log("discussion, fenêtre : " + e); }
+			catch (e) { log("Chat window: " + e); }
 		}
 	}
 
@@ -7023,19 +7493,32 @@ function onMainWindowLoad({ window }) {
 	if (Annota) Annota.addToWindow(window);
 	if (AnnotaChat) {
 		try { AnnotaChat.addToWindow(window); }
-		catch (e) { log("discussion, fenêtre : " + e); }
+		catch (e) { log("Chat window: " + e); }
 	}
 }
 
 function onMainWindowUnload({ window }) {
-	// Indispensable : conserver une référence à une fenêtre fermée fuirait.
+	// Release closed windows to avoid retaining them in memory.
 	if (Annota) Annota.removeFromWindow(window);
 	if (AnnotaChat) {
 		try { AnnotaChat.removeFromWindow(window); } catch (e) {}
 	}
 }
 
-function shutdown() {
+async function shutdown() {
+    if(typeof AnnotaNetwork!=='undefined')AnnotaNetwork.stop();
+    if(typeof AnnotaChatWindow!=="undefined")await AnnotaChatWindow.stop();
+    if(typeof AnnotaWorkspace!=="undefined")AnnotaWorkspace.stop();
+    if (typeof AnnotaExplorer !== "undefined") AnnotaExplorer.stop();
+    if (typeof AnnotaResearchNotes !== "undefined") AnnotaResearchNotes.stop();
+    if (Annota) Annota._shutdownNoteScopes = [...Annota._paperNoteSyncTimers?.keys() || []].map(key => {
+        const [libraryID, parentID] = key.split(":").map(Number); return { libraryID, parentID, existingOnly: true };
+    });
+    if (Annota) { Annota.unregisterNotifier(); Annota.unregisterSelectionForm(); }
+    if (typeof AnnotaInfrastructure !== "undefined" && AnnotaInfrastructure.state) {
+        try { if(typeof AnnotaResearchChat!=='undefined')await AnnotaResearchChat.stop(); await AnnotaInfrastructure.stop(); } catch (error) { log("Shutdown flush failed; recovery snapshots retained: " + error); }
+    }
+    if (typeof AnnotaPalette !== "undefined") AnnotaPalette.stopLayouts();
 	AnnotaReview = null;
 	if (AnnotaCardFields) {
 		try { AnnotaCardFields.unregister(); } catch (e) {}

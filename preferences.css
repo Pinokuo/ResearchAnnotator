@@ -1,11 +1,4 @@
-/* Panneau de préférences Annota.
- *
- * S'adapte à la largeur de la fenêtre : les formulaires sont des grilles
- * « libellé | champ » qui passent sur une colonne quand la place manque
- * (requête de conteneur, plus fiable que la largeur de la fenêtre : le
- * panneau partage celle-ci avec la navigation des réglages), et aucun champ
- * n'a de largeur fixe. Couleurs tirées des jetons du thème de Zotero, avec
- * repli neutre. */
+/* ResearchAnnotator preferences use native theme variables and neutral fallback colors. */
 
 .annota-prefs {
   container-type: inline-size;
@@ -38,10 +31,7 @@
   display: none !important;
 }
 
-/* ---- Onglets : sélecteur segmenté, fixé en haut pendant le défilement ----
- * Pas de bande colorée : le fond de la zone fixe est celui de la fenêtre des
- * réglages, relu à l'exécution (preferences.js → --annota-page-bg), car il
- * diffère d'un thème et d'une version de Zotero à l'autre. */
+/* Segmented tabs stay pinned while scrolling; use the opaque ancestor background across Zotero versions and themes. */
 
 #annota-tabs {
   position: sticky;
@@ -104,7 +94,7 @@
   }
 }
 
-/* ---- Cartes ---- */
+/* Preference cards. */
 
 .annota-card {
   display: flex;
@@ -178,7 +168,7 @@ small.annota-help {
   font-size: 0.92em;
 }
 
-/* ---- Formulaires : libellé | champ, puis une seule colonne ---- */
+/* Forms use label/control columns and stack in narrow windows. */
 
 .annota-form {
   display: grid;
@@ -216,7 +206,7 @@ small.annota-help {
   font-weight: 600;
 }
 
-/* Champs : jamais plus larges que leur colonne. */
+/* Inputs must fit their column. */
 .annota-input {
   width: 100%;
   min-width: 0;
@@ -253,7 +243,7 @@ textarea.annota-input {
   font-size: 0.92em;
 }
 
-/* Cases à cocher et boutons radio : le texte se replie sous lui-même. */
+/* Checkbox and radio labels wrap beneath their own text. */
 .annota-choices {
   display: flex;
   flex-direction: column;
@@ -321,7 +311,7 @@ textarea.annota-input {
   font-size: 0.92em;
 }
 
-/* ---- Boutons segmentés (effort du CLI) ---- */
+/* Segmented CLI effort controls. */
 
 .annota-seg {
   display: inline-flex;
@@ -563,7 +553,7 @@ textarea.annota-fe-extra {
   display: flex;
 }
 
-/* Aperçu : une carte d'annotation de la barre latérale du lecteur. */
+/* Visual structured-field editor. */
 .annota-fe-preview {
   display: flex;
   flex-direction: column;
@@ -689,7 +679,7 @@ textarea.annota-fe-extra {
   text-decoration: underline;
 }
 
-/* ---- Fenêtre étroite ---- */
+/* Preview the reader sidebar annotation card. */
 
 @container annota (max-width: 520px) {
   .annota-form {
@@ -733,7 +723,7 @@ textarea.annota-fe-extra {
   }
 }
 
-/* ---- Blocs repliables ---- */
+/* Narrow-window layout. */
 
 .annota-details {
   margin: 6px 0;
@@ -783,7 +773,7 @@ textarea.annota-fe-extra {
   font-size: 0.92em;
 }
 
-/* ---- Diagnostic du schéma de champs ---- */
+/* Secondary collapsible panels. */
 
 .annota-lint {
   margin: 4px 0 2px;
@@ -809,8 +799,7 @@ textarea.annota-fe-extra {
   font-size: 0.92em;
 }
 
-/* Une erreur veut dire « ce que vous écrivez ne sera pas appliqué » : elle
-   mérite plus qu'une nuance de gris. */
+/* Field-schema diagnostics. */
 .annota-lint[data-worst="error"] {
   background: rgba(220, 70, 70, 0.13);
   border-color: rgba(200, 60, 60, 0.45);
@@ -821,7 +810,7 @@ textarea.annota-fe-extra {
   border-color: rgba(200, 140, 0, 0.4);
 }
 
-/* ---- Pastilles de couleur ---- */
+/* Errors indicate that a definition will not apply and need more than a subtle gray distinction. */
 
 #annota-swatches {
   display: flex;
@@ -847,13 +836,13 @@ textarea.annota-fe-extra {
   border-color: rgba(0, 0, 0, 0.6);
 }
 
-/* Cible en cours d'édition. */
+/* Color swatches. */
 .annota-swatch[data-selected="true"] {
   outline: 2px solid #4a9eff;
   outline-offset: 2px;
 }
 
-/* Pastille verte marquant une couleur qui a son propre prompt. */
+/* Currently edited color target. */
 .annota-swatch[data-has-prompt="true"]::after {
   content: "";
   position: absolute;
@@ -877,3 +866,44 @@ textarea.annota-fe-extra {
     background: #51cf66;
   }
 }
+/* Compact palette rows keep the established field editor attached and reusable. */
+#annota-palette-parking[hidden], #annota-swatches[hidden], .annota-color-delete-options[hidden] { display: none !important; }
+.annota-palette-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 5px 0; }
+.annota-palette-toolbar > .annota-input { width: auto; flex: 1; min-width: 130px; }
+.annota-palette-add { flex: 0 1 auto; }
+.annota-palette-add > summary { cursor: pointer; padding: 4px 7px; }
+.annota-palette-add[open] { flex-basis: 100%; }
+.annota-palette-add > input { display: inline-block; width: auto; max-width: 100%; margin: 4px; }
+.annota-palette-row { border: 1px solid rgba(128,128,128,.4); border-radius: 5px; margin: 5px 0; overflow: visible; }
+.annota-palette-row > summary { display: flex; align-items: center; gap: 7px; padding: 6px 8px; cursor: pointer; list-style: none; }
+.annota-palette-row > summary::marker { content: ''; }
+.annota-palette-row > summary:hover { background: rgba(128,128,128,.08); }
+.annota-palette-handle { cursor: grab; background: transparent; color: inherit; border: 0; padding: 2px 5px; font: inherit; }
+.annota-palette-handle:active { cursor: grabbing; }
+.annota-palette-handle:focus-visible, .annota-palette-row > summary:focus-visible { outline: 2px solid Highlight; outline-offset: 1px; }
+.annota-palette-swatch { width: 15px; height: 15px; border: 1px solid GrayText; border-radius: 3px; flex: none; }
+.annota-palette-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.annota-palette-count { font-size: 11px; opacity: .8; white-space: nowrap; }
+.annota-palette-expand::after { content: '\25b8'; }
+.annota-palette-row[open] > summary .annota-palette-expand::after { content: '\25be'; }
+.annota-palette-expanded { border-top: 1px solid rgba(128,128,128,.3); padding: 7px; }
+.annota-palette-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 7px; }
+.annota-palette-identity > input[type=text] { width: 140px; flex: 1; min-width: 85px; }
+.annota-palette-semantic-label { flex: 1 1 140px; min-width: 0; font-size: 11px; }
+.annota-palette-semantic-label > input { width: 100%; }
+.annota-palette-identity > input[type=color] { width: 42px; height: 30px; padding: 1px; }
+.annota-palette-identity > select { flex-basis: 100%; width: 100%; }
+.annota-palette-expanded .annota-card { margin: 6px 0; padding: 7px; }
+.annota-color-delete-options { margin-top: 6px; border: 1px solid GrayText; border-radius: 4px; padding: 7px; }
+
+.annota-palette-delete{flex:0 0 26px!important;width:26px;padding:2px!important;cursor:pointer;font-size:17px;line-height:22px;}
+.annota-visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
+.annota-trash-icon::before{content:"\1F5D1";}
+
+#annota-highlight-colors-section, #annota-global-fields-section, .annota-settings-visible { border:1px solid GrayText; border-radius:6px; padding:14px; margin:18px 0; } .annota-settings-visible > h3 { margin-top:0; padding-bottom:8px; border-bottom:1px solid GrayText; }
+
+#annota-highlight-colors-section + .annota-card { border:1px solid GrayText; padding:14px; margin:18px 0; }
+
+.annota-color-management { border:1px solid var(--ra-line, GrayText); border-radius:5px; padding:8px; margin-top:8px; }
+
+.ra-settings-brand{display:flex;align-items:center;gap:12px;margin:8px 0 18px;font-size:20px}.ra-settings-brand img{object-fit:contain;border-radius:10px;background:#fff;padding:4px}.ra-inline-color-actions{display:flex;flex-wrap:wrap;gap:3px;margin-left:auto}.ra-inline-color-actions button{min-width:28px;min-height:28px;padding:3px 6px}.annota-palette-name{min-width:70px}.annota-palette-row>summary{flex-wrap:wrap}

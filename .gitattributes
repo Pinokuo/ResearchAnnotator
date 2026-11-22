@@ -1,0 +1,2 @@
+# Preserve synthetic PDF bytes and cross-reference offsets on every checkout.
+tests/fixtures/*.pdf binary

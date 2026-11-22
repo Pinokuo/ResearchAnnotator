@@ -1,32 +1,32 @@
 /* eslint-disable no-undef */
-// Script du panneau de préférences.
+// Preferences-panel script.
 //
-// Chaque couleur de surlignage a son propre réglage, stocké dans le JSON
-// annota.colorPrompts sous la forme { "#hex": { prompt, trigger } }. Les
-// zones encadrées (images, tableaux) ont leurs entrées sous « image:#hex ».
-// (Rétrocompat : une ancienne valeur chaîne est lue comme trigger "auto".)
-// trigger "auto"   = génère à la création du surlignage.
-// trigger "manual" = uniquement via le menu contextuel.
-// Une couleur sans prompt n'est jamais traitée. On sauvegarde toujours AVANT
-// de changer de couleur.
+// Each highlight color has settings stored in the compatibility
+// colorPrompts JSON map as { '#hex': { prompt, trigger } }.
+// Area annotations use image:#hex entries in that same map.
+// Compatibility: historical strings imply the Automatic trigger.
+// Automatic generates missing AI fields on annotation creation.
+// Manual requires an explicit generation action.
+// Save configuration before switching colors; fields and templates also count.
+// switching to another color.
 
 (function () {
-	// Le panneau est construit par Zotero de façon asynchrone : on réessaie
-	// jusqu'à ce que les éléments existent. Mais BORNÉ — un panneau refermé
-	// avant la fin laissait sinon une boucle d'animation tourner sur un
-	// document détruit (« can't access dead object » dans la console).
-	const MAX_RETRIES = 120;   // ~2 s à 60 images/s
+	// Zotero builds the preferences panel asynchronously, so retry until
+	// its elements exist, with a strict bound. Closing the panel before
+	// initialization completes must not leave an animation loop accessing
+	// a destroyed document.
+	const MAX_RETRIES = 120;   // Approximately two seconds at sixty frames per second.
 	function retry(fn, tries) {
 		if ((tries || 0) >= MAX_RETRIES) return;
 		requestAnimationFrame(() => {
 			try { fn((tries || 0) + 1); }
-			catch (e) { /* document fermé entre-temps */ }
+			catch (e) { /* The document closed during initialization. */ }
 		});
 	}
 
-	const PREF_COLORS = "annota.colorPrompts"; // Existing AI configuration
-	const PREF_COLOR_LABELS = "annota.colorLabels"; // Independent semantic color labels
-	const PREF_PROVIDER = "annota.provider";
+	const PREF_COLORS = "researchannotator.colorPrompts"; // Existing AI configuration
+	const PREF_COLOR_LABELS = "researchannotator.colorLabels"; // Independent semantic color labels
+	const PREF_PROVIDER = "researchannotator.provider";
 	const XHTML_NS = "http://www.w3.org/1999/xhtml";
 
 	function api() {
@@ -39,11 +39,11 @@
 		return a && typeof a.t === "function" ? a.t(key, vars) : key;
 	}
 
-	// Fonctions à rejouer quand la langue change (textes construits par code).
+	// Callbacks that rebuild code-generated text when the language changes.
 	const relocalizers = [];
 
-	// Texte traduit → nœuds, sans innerHTML : seules <b>, <i>, <code> sont
-	// reconnues, le reste est du texte.
+	// Render translated text without innerHTML; only b, i and code
+	// are recognized as markup, while everything else remains text.
 	function fillMarkup(el, str) {
 		el.textContent = "";
 		let stack = [el];
@@ -61,8 +61,8 @@
 		}
 	}
 
-	// L'anglais est le texte d'origine du panneau : on le mémorise avant de
-	// le remplacer, pour pouvoir y revenir sans recharger.
+	// English is the panel's original text. Cache it before translating
+	// so switching back does not require a reload.
 	const original = new WeakMap();
 	function applyI18n() {
 		let a = api();
@@ -94,7 +94,7 @@
 	function relocalize() {
 		applyI18n();
 		for (let fn of relocalizers) {
-			try { fn(); } catch (e) { /* panneau en cours de fermeture */ }
+			try { fn(); } catch (e) { /* panel is closing */ }
 		}
 	}
 
@@ -103,9 +103,9 @@
 		return (a && Array.isArray(a.COLORS)) ? a.COLORS : [];
 	}
 
-	// Normalise une valeur brute en { prompt, trigger, template }.
-	// Une couleur est active si elle a un prompt OU un gabarit (un gabarit sans
-	// {{ai}} produit un commentaire déterministe, sans appel à l'IA).
+	// Normalize a raw value to { prompt, trigger, template }.
+	// A historical configuration can use a prompt or a template; without
+	// {{ai}}, a template produces deterministic output without a request.
 	function normalize(raw) {
 		if (!raw) return null;
 		if (typeof raw === "string") {
@@ -117,9 +117,9 @@
 		let prompt = String(raw.prompt || "");
 		let template = String(raw.template || "");
 		let fields = String(raw.fields || "");
-		// Un libellé seul n'active pas une couleur (voir getColorEntry) : il la
-		// nomme, il ne la configure pas.
-		if (!prompt.trim() && !template.trim() && !fields.trim()) return null;
+		// A label alone names a color configuration without activating
+		// generation; see getColorEntry.
+		if (!prompt.trim() && !template.trim() && !fields.trim() && !["auto","manual"].includes(raw.trigger)) return null;
 		return {
 			prompt,
 			template,
@@ -130,6 +130,7 @@
 	}
 
 	function readColorMap() {
+        if (api()?.palette) return api().palette.map();
 		try {
 			let raw = String(Zotero.Prefs.get(PREF_COLORS) || "").trim();
 			if (!raw) return {};
@@ -142,18 +143,20 @@
 	}
 
 	function writeColorMap(map) {
-		// Ne conserver que les entrées ayant un prompt non vide.
+		// Retain nonempty configuration entries, including saved trigger preferences.
 		let clean = {};
 		for (let k of Object.keys(map)) {
 			let n = normalize(map[k]);
 			if (n) clean[k] = n;
 		}
-		Zotero.Prefs.set(PREF_COLORS, Object.keys(clean).length ? JSON.stringify(clean) : "");
+		if (api()?.palette) api().palette.setMap(clean);
+        Zotero.Prefs.set(PREF_COLORS, Object.keys(clean).length ? JSON.stringify(clean) : "");
 	}
 
 	// Independent semantic labels for PDF highlight colors.
 // These are deliberately separate from AI prompts and configuration.
 function readColorLabels() {
+    if (api()?.palette) return api().palette.labels();
     try {
         let raw = String(Zotero.Prefs.get(PREF_COLOR_LABELS) || "").trim();
         if (!raw) return {};
@@ -185,16 +188,17 @@ function writeColorLabels(labels) {
     );
 }
 
-	// Onglets. Boutons HTML + bascule de l'attribut hidden : même mécanique que
-	// le sélecteur de fournisseur ci-dessous, qui fonctionne déjà. Si le script
-	// échoue, tous les panneaux restent visibles plutôt qu'inaccessibles.
+	// Tabs use HTML buttons and hidden attributes, matching the existing
+	// provider selector. If initialization fails, leave panels visible
+	// rather than make them inaccessible.
 	function setupTabs(tries) {
 		let bar = document.getElementById("annota-tabs");
 		let panes = {
 			colors: document.getElementById("annota-pane-colors"),
 			ai: document.getElementById("annota-pane-ai"),
 			chat: document.getElementById("annota-pane-chat"),
-			general: document.getElementById("annota-pane-general")
+			general: document.getElementById("annota-pane-general"),
+            data: document.getElementById("annota-pane-data")
 		};
 		if (!bar || !panes.colors || !panes.ai || !panes.chat || !panes.general) {
 			retry(setupTabs, tries);
@@ -204,8 +208,8 @@ function writeColorLabels(labels) {
 		let tabs = Array.from(bar.querySelectorAll(".annota-tab"));
 		if (!tabs.length) return;
 
-		// Fond de la zone fixée en haut : celui du premier ancêtre opaque,
-		// pour qu'elle se fonde dans la fenêtre au lieu de former une bande.
+		// Use the nearest opaque ancestor's background for the pinned header
+		// so it blends into the preferences window.
 		try {
 			let view = bar.ownerDocument.defaultView;
 			for (let n = bar.parentElement; n; n = n.parentElement) {
@@ -216,7 +220,7 @@ function writeColorLabels(labels) {
 				}
 			}
 		}
-		catch (e) { /* fond transparent : sans conséquence */ }
+		catch (e) { /* A transparent background has no effect here. */ }
 
 		function apply(name) {
 			for (let key of Object.keys(panes)) panes[key].hidden = (key !== name);
@@ -232,7 +236,7 @@ function writeColorLabels(labels) {
 
 		for (let t of tabs) {
 			t.addEventListener("click", () => apply(t.getAttribute("data-pane")));
-			// Flèches gauche/droite : d'un onglet à l'autre, comme un tablist.
+			// Left/Right arrows move between tabs using tablist behavior.
 			t.addEventListener("keydown", (e) => {
 				if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
 				e.preventDefault();
@@ -242,14 +246,14 @@ function writeColorLabels(labels) {
 				apply(next.getAttribute("data-pane"));
 			});
 		}
-		// Rouvrir les réglages ramène au dernier onglet consulté.
+		// Reopening preferences returns to the last selected tab.
 		let a = api();
 		let last = a && a._prefsTab;
 		apply(panes[last] ? last : "colors");
 	}
 
-	// Sélecteur de fournisseur : n'affiche que les réglages du fournisseur actif.
-	// La pref est écrite à la main (un <select> n'a pas de binding « preference »).
+	// Show only the active provider's configuration controls.
+	// Write the preference explicitly because select has no reliable binding here.
 	function setupProvider(tries) {
 		let sel = document.getElementById("annota-provider");
 		let panes = {
@@ -266,8 +270,8 @@ function writeColorLabels(labels) {
 		function current() {
 			let p = String(Zotero.Prefs.get(PREF_PROVIDER) || "").trim();
 			if (p === "openai" || p === "ollama" || p === "cli" || p === "apple") return p;
-			// Rétrocompat avec l'ancienne case à cocher.
-			return Zotero.Prefs.get("annota.useClaudeCLI") ? "cli" : "openai";
+			// Compatibility with the historical checkbox.
+			return Zotero.Prefs.get("researchannotator.useClaudeCLI") ? "cli" : "openai";
 		}
 
 		function apply(p) {
@@ -282,8 +286,8 @@ function writeColorLabels(labels) {
 		});
 	}
 
-	// ---- Modèles Ollama : liste réelle des modèles installés ----
-	// Évite l'échec « model not found » : les tags comptent (llama3.1:8b).
+	// Read the actual installed Ollama models.
+	// Model tags are significant; this avoids a model-not-found failure.
 	function setupOllama(tries) {
 		let sel = document.getElementById("annota-ollama-model");
 		let btn = document.getElementById("annota-ollama-refresh");
@@ -293,8 +297,8 @@ function writeColorLabels(labels) {
 			return;
 		}
 
-		const PREF_MODEL = "annota.ollamaModel";
-		const PREF_ENDPOINT = "annota.ollamaEndpoint";
+		const PREF_MODEL = "researchannotator.ollamaModel";
+		const PREF_ENDPOINT = "researchannotator.ollamaEndpoint";
 
 		function stored() {
 			return String(Zotero.Prefs.get(PREF_MODEL) || "").trim();
@@ -313,8 +317,8 @@ function writeColorLabels(labels) {
 
 		function fill(names) {
 			let keep = stored();
-			// Toujours conserver la valeur enregistrée, même absente d'Ollama,
-			// pour ne pas l'effacer silencieusement.
+			// Always preserve the saved model even if Ollama does not list it;
+			// never silently clear a user's preference.
 			if (keep && !names.includes(keep)) names = [keep].concat(names);
 			sel.textContent = "";
 			for (let n of names) {
@@ -354,13 +358,13 @@ function writeColorLabels(labels) {
 		});
 		btn.addEventListener("click", refresh);
 
-		fill([]);        // afficher au moins la valeur enregistrée
-		refresh();       // puis interroger Ollama
+		fill([]);        // Initially show at least the saved value.
+		refresh();       // Then query Ollama for installed models.
 	}
 
-	// Diagnostic du schéma : parseFieldSchema se tait et continue à l'exécution
-	// — c'est le bon comportement là-bas. Ici, il faut dire ce qui sera ignoré,
-	// sinon un champ nommé « page » disparaît sans que rien ne l'annonce.
+	// Runtime schema parsing deliberately continues silently, but settings
+	// must explain ignored definitions. Otherwise reserved names such as
+	// page could disappear without any diagnostic.
 	function renderLint(box, entry) {
 		if (!box) return;
 		let a = api();
@@ -391,21 +395,21 @@ function writeColorLabels(labels) {
 		}
 	}
 
-	// ---- Éditeur visuel des champs ----
+	// Visual field editor.
 	//
-	// La préférence reste le texte « nom | Libellé | type | options | format »
-	// lu par parseFieldSchema : l'éditeur le relit et le réécrit, si bien que
-	// les réglages existants restent valides et que le mode texte demeure
-	// disponible pour qui le préfère. Ce que l'éditeur ne sait pas montrer
-	// (lignes de commentaire, nom réservé ou absent) le fait rester en mode
-	// texte plutôt que de le perdre.
+	// The stored schema remains name | Label | type | options | format.
+	// The visual editor reads and writes that format, preserving existing
+	// settings and access to raw text in Advanced. Definitions the visual
+	// editor cannot represent, including comments or invalid/reserved names,
+	// remain in raw mode rather than being silently discarded.
+	// Compatibility data is kept intact.
 
-	const FIELD_TYPES = ["text", "textarea", "check", "select", "ai"];
+	const FIELD_TYPES = ["text", "textarea", "check", "select", "multiselect", "ai"];
 	const FIELD_FORMATS = [
 		["plain", "Aa"], ["bold", "B"], ["italic", "I"], ["bolditalic", "BI"], ["underline", "U"]
 	];
-	// Modèles de départ, dans la langue de l'interface. Les noms de variables
-	// restent fixes : un prompt qui s'y réfère marche dans les deux langues.
+	// Localized starter templates retain fixed internal variable names
+	// so prompts referencing those names work in both UI languages.
 	function fieldPresets() {
 		return [
 			{ label: T("fe.preset.1"), rows: [
@@ -440,8 +444,8 @@ function writeColorLabels(labels) {
 		return b;
 	}
 
-	// « Référence indirecte » → reference_indirecte. Un nom réservé
-	// ({{title}}, {{page}}…) prend un préfixe plutôt que d'être ignoré.
+	// Derive a safe internal name from the label; reserved names such
+	// as title or page get a prefix instead of being ignored.
 	function slug(label, a) {
 		let s = String(label || "").normalize("NFD").replace(/[̀-ͯ]/g, "")
 			.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
@@ -452,8 +456,8 @@ function writeColorLabels(labels) {
 		return s;
 	}
 
-	// Chevron dessiné : les flèches Unicode passent en emoji colorées sur
-	// certains systèmes.
+	// Draw the chevron instead of using Unicode arrows that can become
+	// colored emoji on some systems.
 	function chevron(up) {
 		const SVG = "http://www.w3.org/2000/svg";
 		let svg = document.createElementNS(SVG, "svg");
@@ -476,12 +480,12 @@ function writeColorLabels(labels) {
 		return String(s || "").replace(/\|/g, "/").replace(/\s*\n\s*/g, " ").trim();
 	}
 
-	function createFieldEditor({ host, textarea, templateArea, onChange, onCommit, getColor }) {
+	function createFieldEditor({ host, textarea, templateArea, onChange, onCommit, getColor, stableNames = false }) {
 		let a = api();
 		let rows = [];
-		// preferred : le choix de l'utilisateur ; mode : ce qui est affiché
-		// (le texte s'impose pour une couleur que l'éditeur ne sait pas lire).
-		let preferred = (a && a._fieldsMode) || "visual";
+		// preferred is the user's choice; mode is the displayed editor.
+		// Unsupported schemas must use text mode to avoid losing content.
+		let preferred = "visual";
 		let mode = preferred;
 
 		let list = el("div", "annota-fe-list");
@@ -494,6 +498,7 @@ function writeColorLabels(labels) {
 			if (a) a._fieldsMode = preferred;
 			setMode(preferred);
 		});
+		toggle.hidden = stableNames;
 		let visual = el("div", "annota-fe");
 		visual.appendChild(list);
 		visual.appendChild(empty);
@@ -503,7 +508,7 @@ function writeColorLabels(labels) {
 		host.appendChild(notice);
 		let foot = el("div", "annota-fe-foot");
 		foot.appendChild(toggle);
-		host.appendChild(foot);
+		const advanced=el("details","annota-details"),advancedTitle=el("summary");advancedTitle.textContent="Advanced raw field schema";advanced.append(advancedTitle,foot,textarea);host.appendChild(advanced);
 
 		let addBtn = btn(T("fe.add"), "annota-button annota-fe-add", T("fe.add.title"), () => {
 			let base = T("fe.base", { n: rows.length + 1 });
@@ -523,8 +528,8 @@ function writeColorLabels(labels) {
 			for (let i = 2; ; i++) if (!taken.has(base + i)) return base + i;
 		}
 
-		// Lignes que parseFieldSchema ignorerait, ou commentaires : le
-		// mode visuel les perdrait.
+		// Comments or lines ignored by parseFieldSchema cannot be faithfully
+		// represented in visual mode.
 		function unsupported(text) {
 			let lines = String(text || "").split("\n").map(l => l.trim()).filter(Boolean);
 			if (lines.some(l => l.startsWith("#"))) return true;
@@ -533,39 +538,51 @@ function writeColorLabels(labels) {
 
 		function parse(text) {
 			if (!a) return [];
+			let instructions = {};
+			try { instructions = JSON.parse(Zotero.Prefs.get("researchannotator.fieldEditorInstructions") || "{}"); } catch (_) {}
 			return a.parseFieldSchema(text).map(f => ({
+				id: f.id || (stableNames ? f.name : "c_" + a.fieldFingerprint(
+					(getColor().kind === "image" ? "image:" : "") + getColor().hex + "/" + f.name)),
 				name: f.name,
 				label: f.label,
 				type: f.type,
 				format: f.format || "plain",
 				options: (f.options || []).join(", "),
-				prompt: f.prompt || "",
+				prompt: f.type === "ai" ? f.prompt || "" : instructions[f.id || f.name] || "",
 				nameEdited: f.name !== slug(f.label, a)
 			}));
 		}
 
 		function serialize() {
 			return rows.map(r => {
+				if (stableNames && !/^g_/.test(r.name)) r.name = a.newFieldID();
+				if (!r.id) r.id = stableNames ? r.name : a.newFieldID("c");
 				let cols = [r.name, cleanCell(r.label) || r.name, r.type];
 				let fmt = r.format && r.format !== "plain" ? r.format : "";
-				if (r.type === "select") { cols.push(cleanCell(r.options)); if (fmt) cols.push(fmt); }
+				if (["select", "multiselect"].includes(r.type)) { cols.push(cleanCell(r.options)); if (fmt) cols.push(fmt); }
 				else if (r.type === "ai") { cols.push(cleanCell(r.prompt)); if (fmt) cols.push(fmt); }
 				else if (fmt) cols.push(fmt);
+				while (cols.length < 5) cols.push("");
+				cols.push(r.id);
 				return cols.join(" | ");
 			}).join("\n");
 		}
 
-		// commit : changement de structure, enregistré tout de suite ; sinon
-		// une frappe, enregistrée après une pause (onChange).
+		// Commit structural changes immediately; debounce ordinary typing
+		// through onChange.
 		function write(commit) {
 			textarea.value = serialize();
+			let instructions = {};
+			try { instructions = JSON.parse(Zotero.Prefs.get("researchannotator.fieldEditorInstructions") || "{}"); } catch (_) {}
+			for (const row of rows) { if (row.prompt) instructions[row.id || row.name] = row.prompt; else delete instructions[row.id || row.name]; }
+			Zotero.Prefs.set("researchannotator.fieldEditorInstructions", JSON.stringify(instructions));
 			renderPreview();
 			if (commit) onCommit(); else onChange();
 		}
 
-		// Aperçu : l'annotation telle que la montre la barre latérale du
-		// lecteur Zotero (en-tête de page, passage marqué de la couleur en
-		// cours d'édition, commentaire), plutôt qu'un encadré abstrait.
+		// Preview the reader's actual annotation structure, including its
+		// page heading, selected-color passage and structured fields,
+		// rather than an unrelated abstract sample.
 		function renderPreview() {
 			preview.textContent = "";
 			if (!rows.length) { preview.hidden = true; return; }
@@ -594,7 +611,7 @@ function writeColorLabels(labels) {
 			else {
 				for (let r of rows) {
 					let sample = r.type === "check" ? "✓ " + (r.label || r.name)
-						: r.type === "select" ? (r.options.split(",")[0] || "").trim() || r.label
+						: ["select", "multiselect"].includes(r.type) ? (r.options.split(",")[0] || "").trim() || r.label
 						: r.type === "ai" ? (r.label || r.name)
 						: r.label || r.name;
 					let line = el("div");
@@ -681,8 +698,8 @@ function writeColorLabels(labels) {
 			row.appendChild(fmt);
 			row.appendChild(del);
 
-			// Selon le type : choix proposés, ou consigne du modèle.
-			if (r.type === "select") {
+			// Show choices or model instructions according to the field type.
+			if (["select", "multiselect"].includes(r.type)) {
 				let opts = el("input", "annota-input annota-fe-extra");
 				opts.setAttribute("type", "text");
 				opts.setAttribute("placeholder", T("fe.choices.ph"));
@@ -701,8 +718,9 @@ function writeColorLabels(labels) {
 				row.appendChild(pr);
 			}
 
-			// Nom de variable : déduit du libellé tant qu'on ne l'a pas modifié.
+			// Derive the internal name from the label until the user edits it.
 			let varLine = el("label", "annota-fe-var");
+			varLine.hidden = stableNames;
 			varLine.appendChild(el("span", null, T("fe.var")));
 			let open = el("code", null, "{{");
 			let name = el("input", "annota-fe-name");
@@ -710,6 +728,7 @@ function writeColorLabels(labels) {
 			name.setAttribute("aria-label", T("fe.var.aria"));
 			name.setAttribute("spellcheck", "false");
 			name.value = r.name;
+			name.readOnly = stableNames;
 			let fit = () => { name.style.width = (Math.max(3, name.value.length) + 1) + "ch"; };
 			fit();
 			let close = el("code", null, "}}");
@@ -720,7 +739,7 @@ function writeColorLabels(labels) {
 
 			label.addEventListener("input", () => {
 				r.label = label.value;
-				if (!r.nameEdited) {
+				if (!stableNames && !r.nameEdited) {
 					r.name = uniqueName(slug(r.label, a), r);
 					name.value = r.name;
 					fit();
@@ -740,11 +759,14 @@ function writeColorLabels(labels) {
 				r.nameEdited = v !== slug(r.label, a);
 				write(false);
 			});
-			type.addEventListener("change", () => {
+			const changeType = () => {
+				if (r.type === type.value) return;
 				r.type = type.value;
-				write(true);
 				render();
-			});
+				write(true);
+			};
+			type.addEventListener("input", changeType);
+			type.addEventListener("change", changeType);
 			return row;
 		}
 
@@ -780,13 +802,13 @@ function writeColorLabels(labels) {
 				rows = parse(textarea.value);
 				render();
 			}
-			mode = m;
+			mode = m;if(m==="text")advanced.open=true;
 			visual.hidden = m !== "visual";
 			textarea.hidden = m === "visual";
 			toggle.textContent = T(m === "visual" ? "fe.astext" : "fe.visual");
 		}
 
-		// Couleur chargée, effacée, ou texte modifié ailleurs.
+		// Refresh after color loading, reset or external schema changes.
 		function refresh() {
 			rows = parse(textarea.value);
 			render();
@@ -835,8 +857,8 @@ function writeColorLabels(labels) {
 			return;
 		}
 
-		// Couleur en cours d'édition, et type d'annotation réglé : passages
-		// surlignés (« text ») ou zones encadrées (« image »).
+		// Current color and annotation kind: text highlights or
+		// image-area annotations.
 		let current = palette[0].hex;
 		let kind = "text";
 		let keyOf = (hex) => kind === "image" ? "image:" + hex : hex;
@@ -888,15 +910,23 @@ function scheduleSemanticLabelSave() {
 		function setTrigger(v) {
 			for (let r of triggerRadios) r.checked = (r.value === (v === "manual" ? "manual" : "auto"));
 		}
+		function updateTriggerVisibility() {
+			const section=document.getElementById("annota-ai-trigger-section");
+			if (!section) return;
+			const globalDraft=document.getElementById("annota-global-fields");
+			const globals=globalDraft ? api().parseFieldSchema(globalDraft.value) : api().getGlobalFields();
+			section.hidden=![...api().parseFieldSchema(fieldsArea.value),...globals].some(field=>field.type==="ai") &&
+				!(textarea.value.trim() && api().entryNeedsAI({prompt:textarea.value,template:templateArea.value,fields:fieldsArea.value}));
+		}
 
 		function save() {
 			let map = readColorMap();
 			let prompt = textarea.value;
 			let template = templateArea.value;
 			let fields = fieldsArea.value;
-			// Actif si prompt OU gabarit OU champs.
+			// Configured when a prompt, template or field schema exists.
 			if ((prompt && prompt.trim()) || (template && template.trim())
-					|| (fields && fields.trim())) {
+					|| (fields && fields.trim()) || currentTrigger() === "manual" || map[keyOf(current)]) {
 				map[keyOf(current)] = { prompt, template, fields,
 					label: String(labelInput.value || "").trim(),
 					trigger: currentTrigger() };
@@ -907,15 +937,17 @@ function scheduleSemanticLabelSave() {
 			writeColorMap(map);
 			flashStatus(T("p.saved"));
 			refreshSwatches();
+            api()?.refreshPaletteCounts?.();
 		}
 
-		// Tout le réglage des couleurs tient dans UNE préférence JSON de plusieurs
-		// kilo-octets, et Zotero écrit les préférences sur disque : sauvegarder à
-		// la frappe réécrivait le bloc entier toutes les demi-secondes (Firefox
-		// s'en plaint dans la console). On attend donc une vraie pause de frappe,
-		// la sortie du champ ou le changement de couleur, qui eux forcent
-		// l'enregistrement immédiat.
+		// The color JSON preference is several kilobytes and Zotero writes
+		// preferences to disk. Saving every keystroke repeatedly rewrote
+		// the entire block and triggered Firefox warnings. Wait for a real
+		// typing pause; blur and color changes flush immediately.
+		// Keep validation immediate while deferring persistence.
+		// This reduces writes without losing a completed editing gesture.
 		function lintNow() {
+			updateTriggerVisibility();
 			renderLint(lintBox, {
 				fields: fieldsArea.value,
 				prompt: textarea.value,
@@ -925,15 +957,18 @@ function scheduleSemanticLabelSave() {
 
 		let saveTimer = null;
 		function scheduleSave() {
-			// Le diagnostic est immédiat, l'enregistrement non : on veut voir
-			// « page est réservé » en tapant, pas 2,5 s plus tard.
+			// Diagnostics should appear during typing rather than after the
+			// debounce delay.
 			lintNow();
 			if (saveTimer) clearTimeout(saveTimer);
-			saveTimer = setTimeout(save, 2500);
+			saveTimer = setTimeout(saveNow, 2500);
 		}
 		function saveNow() {
 			if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-			save();
+			try { save(); }
+			catch (error) {
+				if (status) status.textContent = String(error.message || error) + " Complete the field configuration to save. Existing settings are retained.";
+			}
 		}
 
 		function load(hex) {
@@ -957,17 +992,22 @@ function scheduleSemanticLabelSave() {
 			refreshSwatches();
 		}
 
-		// Reflète l'état des pastilles + avertissement si rien n'est configuré.
+		// Refresh color swatch status and the unconfigured-state warning.
 		function refreshSwatches() {
 			let map = readColorMap();
-			// L'avertissement porte sur les deux types : des zones seules
-			// suffisent à rendre Annota actif.
+			// Check both annotation kinds: configured areas alone can make
+			// the extension active.
 			let anyPrompt = Object.keys(map).some(k => normalize(map[k]));
 			for (let el of swatchBox.children) {
 				let hex = el.getAttribute("data-color");
 				let name = el.getAttribute("data-name") || hex;
 				let entry = normalize(map[keyOf(hex)]);
 				el.setAttribute("data-selected", hex === current ? "true" : "false");
+                el.setAttribute("role", "radio"); el.setAttribute("aria-checked", String(hex === current));
+                if (api()?.palette) {
+                    api().palette.styleButton(el, { hex, label: readColorLabels()[hex] || name }, hex === current);
+                    el.style.width = "auto"; el.style.height = "auto";
+                }
 				el.setAttribute("data-has-prompt", entry ? "true" : "false");
 				let tip = entry
 					? name + (entry.label ? " · " + entry.label : "") + ": "
@@ -975,10 +1015,11 @@ function scheduleSemanticLabelSave() {
 					: name + ": " + T("p.sw.inactive");
 				el.setAttribute("title", tip);
 			}
-			if (idleWarning) idleWarning.hidden = anyPrompt;
+			if (idleWarning) idleWarning.hidden = anyPrompt || !!api()?.getGlobalFields().length;
 		}
 
-		// --- Pastilles de couleur ---
+		function renderSwatches() {
+            swatchBox.replaceChildren();
 		for (let c of palette) {
 			let b = document.createElementNS(XHTML_NS, "button");
 			b.setAttribute("type", "button");
@@ -996,6 +1037,13 @@ function scheduleSemanticLabelSave() {
 			swatchBox.appendChild(b);
 		}
 
+        }
+        renderSwatches();
+        document.addEventListener?.("annota-preferences-flush", () => { saveNow(); saveSemanticLabelNow(); });
+        document.addEventListener?.("annota-palette-changed", () => {
+            palette = colors(); renderSwatches();
+            load(palette.some(c => c.hex === current) ? current : palette[0].hex);
+        });
 		// --- Textarea ---
 		textarea.addEventListener("input", scheduleSave);
 		textarea.addEventListener("blur", saveNow);
@@ -1018,13 +1066,14 @@ let colorLabelLayoutInput =
 
 if (colorLabelLayoutInput) {
     colorLabelLayoutInput.value =
-        Zotero.Prefs.get("annota.colorLabelLayout") || "wrap";
+        Zotero.Prefs.get("researchannotator.colorLabelLayout") || "wrap";
 
     colorLabelLayoutInput.addEventListener("change", () => {
         Zotero.Prefs.set(
-            "annota.colorLabelLayout",
+            "researchannotator.colorLabelLayout",
             colorLabelLayoutInput.value
         );
+        api()?.palette?.refreshLayouts();
     });
 }
 // Persistent ordering for generated PDF research notes.
@@ -1033,150 +1082,26 @@ let paperNoteSortInput =
 
 if (paperNoteSortInput) {
     paperNoteSortInput.value =
-        Zotero.Prefs.get("annota.paperNoteSortOrder") || "pdf";
+        Zotero.Prefs.get("researchannotator.paperNoteSortOrder") || "pdf";
 
     paperNoteSortInput.addEventListener("change", () => {
         Zotero.Prefs.set(
-            "annota.paperNoteSortOrder",
+            "researchannotator.paperNoteSortOrder",
             paperNoteSortInput.value
         );
     });
 }
 
-// Import/export semantic color labels independently of AI configuration.
-let exportLabelsBtn = document.getElementById("annota-color-export");
-let importLabelsBtn = document.getElementById("annota-color-import");
-let importLabelsFile = document.getElementById("annota-color-import-file");
-let colorToolsStatus = document.getElementById("annota-color-tools-status");
-
-function colorToolsMessage(message) {
-    if (!colorToolsStatus) return;
-    colorToolsStatus.textContent = message;
-}
-
-if (exportLabelsBtn) {
-    exportLabelsBtn.addEventListener("click", async () => {
-        try {
-            saveSemanticLabelNow();
-
-            let data = {
-                version: 1,
-                labels: readColorLabels()
-            };
-
-            let { FilePicker } = ChromeUtils.importESModule(
-                "chrome://zotero/content/modules/filePicker.mjs"
-            );
-
-            let picker = new FilePicker();
-
-            picker.init(
-                window,
-                "Save Annota color labels",
-                picker.modeSave
-            );
-
-            picker.appendFilter("JSON files", "*.json");
-            picker.defaultString = "annota-color-labels.json";
-
-            let result = await picker.show();
-
-            if (result !== picker.returnOK &&
-                result !== picker.returnReplace) {
-                colorToolsMessage("Export cancelled.");
-                return;
-            }
-
-            let path = picker.file;
-
-            if (!path.toLowerCase().endsWith(".json")) {
-                path += ".json";
-            }
-
-            await Zotero.File.putContentsAsync(
-                path,
-                JSON.stringify(data, null, 2)
-            );
-
-            colorToolsMessage("Saved successfully: " + path);
-        }
-        catch (e) {
-            colorToolsMessage("Export failed: " + e.message);
-            Zotero.logError(e);
-        }
-    });
-}
-
-if (importLabelsBtn && importLabelsFile) {
-    importLabelsBtn.addEventListener("click", () => {
-        importLabelsFile.click();
-    });
-
-    importLabelsFile.addEventListener("change", () => {
-        let file = importLabelsFile.files && importLabelsFile.files[0];
-        if (!file) return;
-
-        let reader = new FileReader();
-
-        reader.onload = () => {
-            try {
-                let imported = JSON.parse(String(reader.result || ""));
-                let importedLabels = imported.labels || imported;
-
-                if (!importedLabels ||
-                    typeof importedLabels !== "object" ||
-                    Array.isArray(importedLabels)) {
-                    throw new Error("Invalid color-label format.");
-                }
-
-                let validColors = new Set(palette.map(c => c.hex.toLowerCase()));
-                let clean = {};
-
-                for (let [hex, value] of Object.entries(importedLabels)) {
-                    let normalizedHex = String(hex).toLowerCase();
-                    let label = String(value || "").trim();
-
-                    if (validColors.has(normalizedHex) && label) {
-                        clean[normalizedHex] = label;
-                    }
-                }
-
-                writeColorLabels(clean);
-
-                // Refresh the currently displayed color label.
-                semanticLabelInput.value = clean[current] || "";
-
-                colorToolsMessage(
-                    "Imported " + Object.keys(clean).length + " color labels."
-                );
-            }
-            catch (e) {
-                colorToolsMessage("Import failed: " + e.message);
-            }
-            finally {
-                importLabelsFile.value = "";
-            }
-        };
-
-        reader.onerror = () => {
-            colorToolsMessage("Could not read the selected file.");
-            importLabelsFile.value = "";
-        };
-
-        reader.readAsText(file);
-    });
-}
-		// --- Choix du mode (auto / manuel) ---
-		// Ne sauvegarde que si la couleur a déjà un prompt (sinon rien à régler).
+// Settings and legacy color-label files share the Data Management importer.
+		// --- Trigger selection (automatic / manual) ---
+		// Preserve trigger changes even for configurations with only global AI fields.
 		for (let r of triggerRadios) {
 			r.addEventListener("change", () => {
-				if ((textarea.value && textarea.value.trim())
-						|| (templateArea.value && templateArea.value.trim())
-						|| (fieldsArea.value && fieldsArea.value.trim())) saveNow();
+				saveNow();
 			});
 		}
 
-		// --- Bouton d'effacement ---
+		// --- Clear button ---
 		if (clearBtn) {
 			let clearColor = () => {
 				let map = readColorMap();
@@ -1190,6 +1115,7 @@ if (importLabelsBtn && importLabelsFile) {
 				lintNow();
 				if (editor) editor.refresh();
 				refreshSwatches();
+                api()?.refreshPaletteCounts?.();
 				flashStatus(T("p.cleared"));
 			};
 			clearBtn.addEventListener("click", clearColor);
@@ -1227,13 +1153,18 @@ if (importLabelsBtn && importLabelsFile) {
 			}
 		}
 
+        api().colorPreferences = {
+            refreshTrigger: updateTriggerVisibility,
+            select(hex) { saveNow(); saveSemanticLabelNow(); load(hex); },
+            flush() { saveNow(); saveSemanticLabelNow(); }
+        };
 		load(current);
 		relocalizers.push(() => { lintNow(); refreshSwatches(); });
 	}
 
 	// ---- Discussion ----
-	// Le fournisseur et les consignes sont écrits à la main, comme le
-	// fournisseur des annotations : ni <select> ni <textarea> n'ont ici de
+	// Write Chat provider and instructions explicitly, like annotation
+	// provider settings, because these controls lack reliable preference bindings.
 	// liaison « preference » fiable.
 	function setupChat(tries) {
 		let sel = document.getElementById("annota-chat-provider");
@@ -1244,8 +1175,8 @@ if (importLabelsBtn && importLabelsFile) {
 			retry(setupChat, tries);
 			return;
 		}
-		const PREF = "annota.chatProvider";
-		const PREF_INSTR = "annota.chatInstructions";
+		const PREF = "researchannotator.chatProvider";
+		const PREF_INSTR = "researchannotator.chatInstructions";
 		const KNOWN = ["openai", "ollama", "cli", "apple"];
 		const NAMES = { openai: "Mistral / API", ollama: "Ollama", cli: "Claude Code CLI",
 			apple: "Apple Intelligence" };
@@ -1261,10 +1192,10 @@ if (importLabelsBtn && importLabelsFile) {
 				: sel.value ? T("p.chat.ready") : T("p.chat.current", { name: NAMES[p] || p });
 		}
 
-		// Champs « modèle » vides : on montre celui qui s'appliquera.
+		// For empty model settings, show the model that will actually be used.
 		let hints = {
-			"annota-chat-model": ["annota.model", "mistral-large-latest"],
-			"annota-chat-ollama-model": ["annota.ollamaModel", "llama3.1"]
+			"annota-chat-model": ["researchannotator.model", "mistral-large-latest"],
+			"annota-chat-ollama-model": ["researchannotator.ollamaModel", "llama3.1"]
 		};
 		function hint() {
 			for (let id of Object.keys(hints)) {
@@ -1303,11 +1234,11 @@ if (importLabelsBtn && importLabelsFile) {
 	}
 
 	// ---- Liaison data-pref ----
-	// Chaque champ porteur de data-pref affiche sa préférence et l'écrit à la
-	// modification. Le type d'origine est conservé : un entier reste un
-	// entier, la température (chaîne historique) reste une chaîne, une case
-	// à cocher écrit un booléen. Une saisie numérique invalide n'est pas
-	// enregistrée plutôt que d'écrire NaN.
+	// Controls with data-pref display their preference and write changes
+	// while preserving the original type: integers stay integers,
+	// historical string temperatures stay strings, and checkboxes
+	// write booleans. Invalid numeric input is not persisted
+	// as NaN.
 	function bindPrefs(tries) {
 		let els = Array.from(document.querySelectorAll("[data-pref]"));
 		if (!els.length) {
@@ -1332,12 +1263,16 @@ if (importLabelsBtn && importLabelsFile) {
 				Zotero.Prefs.set(key, v);
 				cur = v;
 			};
+            document.addEventListener?.("annota-settings-imported", () => {
+                cur = Zotero.Prefs.get(key);
+                if (isBox) el.checked = !!cur; else el.value = cur === undefined || cur === null ? "" : String(cur);
+            });
 			el.addEventListener(isBox ? "change" : "input", write);
 			if (!isBox) el.addEventListener("change", write);
 		}
 	}
 
-	// Clé d'API masquée par défaut, révélable le temps de la vérifier.
+	// Hide API credentials by default, with an explicit temporary reveal action.
 	function setupKeyToggle(tries) {
 		let input = document.getElementById("annota-apikey");
 		let btn = document.getElementById("annota-apikey-show");
@@ -1352,7 +1287,7 @@ if (importLabelsBtn && importLabelsFile) {
 		});
 	}
 
-	// ---- Claude Code CLI : détection, modèles, effort ----
+	// Detect Claude Code CLI paths, models and effort levels.
 
 	const CLI_KNOWN = { opus: "p.cli.desc.opus", sonnet: "p.cli.desc.sonnet",
 		haiku: "p.cli.desc.haiku", fable: "" };
@@ -1364,8 +1299,8 @@ if (importLabelsBtn && importLabelsFile) {
 		return (a && typeof a.cliCaps === "function" && a.cliCaps()) || null;
 	}
 
-	// Un menu de modèles + des boutons d'effort, liés à deux préférences.
-	// inherit : libellé de l'option vide (« Default » ou « Same as AI tab »).
+	// Model and effort controls are bound to separate preferences.
+	// inherit labels the empty choice, such as Default or Same as AI tab.
 	function cliPicker({ select, other, effortHost, effortNote, modelPref, effortPref, inherit }) {
 		const OTHER = "__other__";
 		function build() {
@@ -1390,8 +1325,8 @@ if (importLabelsBtn && importLabelsFile) {
 			other.hidden = !isOther;
 			if (isOther) other.value = stored;
 
-			// Effort : seulement si le CLI le propose (ou n'a pas encore été
-			// interrogé, auquel cas on montre les niveaux connus).
+			// Show effort only if the CLI advertises it, or before capabilities
+			// are known, when the known levels are offered provisionally.
 			effortHost.textContent = "";
 			let supported = !caps || caps.effort;
 			let levels = (caps && caps.efforts && caps.efforts.length) ? caps.efforts : EFFORT_FALLBACK;
@@ -1444,13 +1379,13 @@ if (importLabelsBtn && importLabelsFile) {
 			select: sel, other: document.getElementById("annota-cli-model-other"),
 			effortHost: document.getElementById("annota-cli-effort"),
 			effortNote: document.getElementById("annota-cli-effort-note"),
-			modelPref: "annota.cliModel", effortPref: "annota.cliEffort",
+			modelPref: "researchannotator.cliModel", effortPref: "researchannotator.cliEffort",
 			inherit: "p.cli.default"
 		});
 		cliPicker({
 			select: chatSel, other: document.getElementById("annota-chat-cli-model-other"),
 			effortHost: document.getElementById("annota-chat-cli-effort"),
-			modelPref: "annota.chatCliModel", effortPref: "annota.chatCliEffort",
+			modelPref: "researchannotator.chatCliModel", effortPref: "researchannotator.chatCliEffort",
 			inherit: "p.cli.same"
 		});
 
@@ -1470,10 +1405,10 @@ if (importLabelsBtn && importLabelsFile) {
 			if (!auto) status.textContent = T("p.cli.looking");
 			try {
 				let caps = await a.probeCLI(pathInput.value);
-				// Chemin trouvé ailleurs que celui saisi : on l'adopte.
+				// Adopt the discovered path when it differs from the entered path.
 				if (caps.path && caps.path !== pathInput.value.trim()) {
 					pathInput.value = caps.path;
-					Zotero.Prefs.set("annota.cliPath", caps.path);
+					Zotero.Prefs.set("researchannotator.cliPath", caps.path);
 				}
 				describe(caps);
 				for (let b of cliPickers) b();
@@ -1484,12 +1419,12 @@ if (importLabelsBtn && importLabelsFile) {
 			finally { busy = false; }
 		}
 		detect.addEventListener("click", () => run(false));
-		// Première ouverture : on interroge le CLI sans attendre de clic, sans
-		// message d'erreur si rien n'est installé.
+		// On first opening, inspect the CLI automatically without showing
+		// an error merely because it is not installed.
 		if (!cliCaps()) run(true);
 	}
 
-	// Langue : appliquée au chargement, puis à chaque changement du menu.
+	// Apply the selected UI language on load and after selection changes.
 	function setupLanguage(tries) {
 		let sel = document.getElementById("annota-ui-lang");
 		if (!sel) {
@@ -1497,13 +1432,13 @@ if (importLabelsBtn && importLabelsFile) {
 			return;
 		}
 		applyI18n();
-		// L'observateur de bootstrap.js reconstruit menus et discussion ; ici,
-		// on traduit le panneau ouvert. Le délai laisse bindPrefs écrire la
-		// préférence d'abord.
+		// bootstrap.js rebuilds menus and Chat; translate this open panel
+		// after allowing bindPrefs to write the preference first.
+		// The delay preserves that ordering.
 		sel.addEventListener("change", () => setTimeout(relocalize, 0));
 	}
 
-	// Orthographe : correcteur de macOS, la carte n'a pas de sens ailleurs.
+	// The macOS spelling configuration is not relevant on other platforms.
 	function setupSpell(tries) {
 		let card = document.getElementById("annota-spell-card");
 		if (!card) {
@@ -1515,6 +1450,34 @@ if (importLabelsBtn && importLabelsFile) {
 		card.hidden = !mac;
 	}
 
+	function setupGlobalFields(tries) {
+		const host = document.getElementById("annota-global-fields-editor");
+		const textarea = document.getElementById("annota-global-fields");
+		const status = document.getElementById("annota-global-fields-status"), a = api();
+		if (!host || !textarea || !a) { retry(setupGlobalFields, tries); return; }
+		textarea.value = a.getGlobalFields().map(f => [f.id, f.label, f.type,
+			f.type === "ai" ? cleanCell(f.prompt) : (f.options || []).join(", "), f.format || "plain", f.id].join(" | ")).join("\n");
+		const save = () => {
+			try {
+				const errors = a.validateFieldSchema(textarea.value).filter(e => e.level === "error");
+				if (errors.length) throw new Error(errors.map(e => e.message).join("; "));
+				const old = new Map(a.getGlobalFields().map(f => [f.id, f]));
+				a.saveGlobalFields(a.parseFieldSchema(textarea.value).map(f => ({ ...old.get(f.name),
+					id: f.name, label: f.label, type: f.type, options: f.options, format: f.format, prompt: f.prompt })));
+				status.textContent = T("p.saved");
+				a.colorPreferences?.refreshTrigger();
+			}
+			catch (error) { status.textContent = error.message || String(error); }
+		};
+		const globalEditor = createFieldEditor({ host, textarea, stableNames: true, onChange: save, onCommit: save,
+			getColor: () => ({ name: "Global fields", hex: "#77999a" }) });
+        document.addEventListener?.("annota-settings-imported", () => {
+            textarea.value = a.getGlobalFields().map(f => [f.id, f.label, f.type,
+                f.type === "ai" ? cleanCell(f.prompt) : (f.options || []).join(", "), f.format || "plain", f.id].join(" | ")).join("\n");
+            globalEditor.refresh();
+        });
+	}
+
 	bindPrefs();
 	setupSpell();
 	setupLanguage();
@@ -1522,6 +1485,7 @@ if (importLabelsBtn && importLabelsFile) {
 	setupCLI();
 	setupTabs();
 	setup();
+	setupGlobalFields();
 	setupProvider();
 	setupOllama();
 	setupChat();

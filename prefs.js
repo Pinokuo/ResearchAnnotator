@@ -1,113 +1,117 @@
-// Préférences par défaut (branche extensions.zotero.annota.*)
+// Default preferences use extensions.zotero.researchannotator.*.
 
-// ---- Fournisseur ----
-// "openai" = Mistral ou tout endpoint compatible OpenAI (distant)
-// "ollama" = modèle local via Ollama
+// ---- Provider ----
+pref("extensions.zotero.researchannotator.globalFields", "");
+pref("extensions.zotero.researchannotator.fieldCategories", "{}");
+pref("extensions.zotero.researchannotator.suggestionDismissals", "{}");
+pref("extensions.zotero.researchannotator.aiConcurrency", 1);
+// "openai" = Mistral or any remote OpenAI-compatible endpoint
+// Ollama selects a local model connection.
 // "cli"    = Claude Code CLI local
-pref("extensions.zotero.annota.provider", "openai");
+pref("extensions.zotero.researchannotator.provider", "openai");
 
-// Compatible OpenAI (Mistral par défaut).
-pref("extensions.zotero.annota.apiKey", "");
-pref("extensions.zotero.annota.model", "mistral-large-latest");
-pref("extensions.zotero.annota.endpoint", "https://api.mistral.ai/v1/chat/completions");
+// OpenAI-compatible API, defaulting to Mistral.
+pref("extensions.zotero.researchannotator.apiKey", "");
+pref("extensions.zotero.researchannotator.model", "mistral-large-latest");
+pref("extensions.zotero.researchannotator.endpoint", "https://api.mistral.ai/v1/chat/completions");
 
-// Ollama (local, aucune clé requise).
-pref("extensions.zotero.annota.ollamaEndpoint", "http://localhost:11434/v1/chat/completions");
-pref("extensions.zotero.annota.ollamaModel", "llama3.1");
+// Local Ollama requires no key.
+pref("extensions.zotero.researchannotator.ollamaEndpoint", "http://localhost:11434/v1/chat/completions");
+pref("extensions.zotero.researchannotator.ollamaModel", "llama3.1");
 
-// Apple Intelligence (local, macOS 26+). Binaire compilé à la demande ;
-// laisser vide pour utiliser celui géré par Annota.
-pref("extensions.zotero.annota.applePath", "");
-pref("extensions.zotero.annota.swiftcPath", "/usr/bin/swiftc");
+// Apple Intelligence is local on macOS 26+; compile its helper on demand.
+// Leave the helper path empty to use the extension-managed binary.
+pref("extensions.zotero.researchannotator.applePath", "");
+pref("extensions.zotero.researchannotator.swiftcPath", "/usr/bin/swiftc");
 
 // Claude Code CLI (local).
-pref("extensions.zotero.annota.cliPath", "claude");
-pref("extensions.zotero.annota.cliModel", "");
-// Niveau d'effort (--effort) : "" = celui de Claude Code.
-pref("extensions.zotero.annota.cliEffort", "");
-// Ce que le CLI installé annonce (modèles, efforts, version), relevé par
-// « Detect » dans les réglages. JSON.
-pref("extensions.zotero.annota.cliCaps", "");
+pref("extensions.zotero.researchannotator.cliPath", "claude");
+pref("extensions.zotero.researchannotator.cliModel", "");
+// Effort level (--effort): "" inherits Claude Code's setting.
+pref("extensions.zotero.researchannotator.cliEffort", "");
+// Cache installed CLI models, effort levels and version as JSON,
+// as reported by Detect in settings.
+pref("extensions.zotero.researchannotator.cliCaps", "");
 
-pref("extensions.zotero.annota.temperature", "0.2");
+pref("extensions.zotero.researchannotator.temperature", "0.2");
 
 // ---- Sortie ----
-pref("extensions.zotero.annota.language", "français");
-pref("extensions.zotero.annota.maxWords", 80);
+pref("extensions.zotero.researchannotator.language", "français");
+pref("extensions.zotero.researchannotator.maxWords", 80);
 
 // ---- Contexte transmis ----
-pref("extensions.zotero.annota.sendContext", true);
-pref("extensions.zotero.annota.maxAbstractChars", 1200);
-// Résoudre les appels de citation du passage ([1], (Auteur, année)) : liens
-// internes du PDF d'abord, bibliographie extraite du texte en repli.
-pref("extensions.zotero.annota.resolveCitations", true);
-pref("extensions.zotero.annota.maxRefs", 8);
+pref("extensions.zotero.researchannotator.sendContext", true);
+pref("extensions.zotero.researchannotator.maxAbstractChars", 1200);
+// Resolve numeric or author-year citation calls through internal links.
+// PDF internal links first, extracted bibliography as fallback.
+pref("extensions.zotero.researchannotator.resolveCitations", true);
+pref("extensions.zotero.researchannotator.maxRefs", 8);
 
-// ---- Échecs ----
-// Une génération ratée laissait un surlignage sans commentaire, silencieusement.
-// On réessaie, puis on marque l'annotation d'une étiquette pour pouvoir la
-// retrouver et la rejouer.
-pref("extensions.zotero.annota.retries", 1);
-pref("extensions.zotero.annota.markFailures", true);
-pref("extensions.zotero.annota.failedTag", "annota-failed");
+// Failure handling.
+// Previously an unsuccessful request silently left an unfilled annotation.
+// Apply safe retry policy, then mark failures so users can explicitly retry.
+// find and retry it.
+pref("extensions.zotero.researchannotator.retries", 1);
+pref("extensions.zotero.researchannotator.markFailures", true);
+pref("extensions.zotero.researchannotator.failedTag", "annota-failed");
 
-// Sortie structurée (JSON) pour le remplissage des champs, quand le
-// fournisseur la gère : Mistral/OpenAI et Ollama. Repli automatique sur la
-// lecture « nom: valeur » si la réponse n'est pas du JSON exploitable.
-pref("extensions.zotero.annota.structuredOutput", true);
+// Use provider-enforced JSON field output where supported,
+// including Mistral/OpenAI and Ollama. Fall back to name: value
+// parsing if the response is not usable JSON.
+pref("extensions.zotero.researchannotator.structuredOutput", true);
 
-// ---- Déclenchement ----
-pref("extensions.zotero.annota.alsoUnderline", false);
-pref("extensions.zotero.annota.overwrite", false);
-pref("extensions.zotero.annota.showPlaceholder", true);
+// Generation triggers.
+pref("extensions.zotero.researchannotator.alsoUnderline", false);
+pref("extensions.zotero.researchannotator.overwrite", false);
+pref("extensions.zotero.researchannotator.showPlaceholder", true);
 
-// ---- Couleurs ----
+// ---- Colors ----
 // JSON { "#ffd400": { prompt, trigger, template }, … }.
-// Vide par défaut : aucune couleur n'est traitée tant que rien n'est configuré.
-pref("extensions.zotero.annota.colorPrompts", "");
+// Empty by default: unconfigured colors are not processed.
+pref("extensions.zotero.researchannotator.colorPrompts", "");
 
-// ---- Discussion (panneau « Annota Chat » du volet de l'item) ----
-// Fournisseur : "" = celui des annotations, sinon openai | ollama | cli | apple.
-pref("extensions.zotero.annota.chatProvider", "");
-// Modèles propres à la discussion ; vide = celui réglé pour les annotations.
-pref("extensions.zotero.annota.chatModel", "");
-pref("extensions.zotero.annota.chatOllamaModel", "");
-pref("extensions.zotero.annota.chatCliModel", "");
-pref("extensions.zotero.annota.chatCliEffort", "");
-// Contexte envoyé, en caractères. 0 = selon le fournisseur (API 100 000,
+// ---- Research Chat (item sidebar panel) ----
+// An empty Chat provider inherits annotation settings; otherwise select its provider.
+pref("extensions.zotero.researchannotator.chatProvider", "");
+// Chat models inherit annotation models when their settings are empty.
+pref("extensions.zotero.researchannotator.chatModel", "");
+pref("extensions.zotero.researchannotator.chatOllamaModel", "");
+pref("extensions.zotero.researchannotator.chatCliModel", "");
+pref("extensions.zotero.researchannotator.chatCliEffort", "");
+// Context budgets count characters; zero selects a provider-specific default.
 // Claude CLI 200 000, Ollama 12 000, Apple 6 000).
-pref("extensions.zotero.annota.chatMaxChars", 0);
-pref("extensions.zotero.annota.chatIncludeAnnotations", true);
-pref("extensions.zotero.annota.chatIncludeNotes", true);
-// La discussion peut proposer de modifier, compléter ou créer des notes ;
-// rien n'est écrit sans un clic sur « Appliquer ».
-pref("extensions.zotero.annota.chatEditNotes", true);
-// Collections où la discussion cherche, par bibliothèque (dernier choix) :
-// JSON { "libraryID": { "keys": [...], "sub": true } }. Vide = toute la bibliothèque.
-pref("extensions.zotero.annota.chatCollections", "");
-// Portée « bibliothèque » : nombre d'items transmis au modèle.
-pref("extensions.zotero.annota.chatLibraryItems", 8);
-// Consignes ajoutées à celles d'Annota (ton, langue, format…).
-pref("extensions.zotero.annota.chatInstructions", "");
-// Bouton « Ask Annota » dans le popup de sélection du lecteur.
-pref("extensions.zotero.annota.chatSelectionButton", true);
-// Historique des discussions (annota-chats.json, dossier de données Zotero).
-pref("extensions.zotero.annota.chatKeepHistory", true);
-// Raccourci d'ouverture du panneau de discussion : ⌘ (Mac) ou Ctrl + cette
-// lettre. Vide = aucun raccourci (le bouton de la barre des onglets reste).
-pref("extensions.zotero.annota.chatShortcut", "J");
+pref("extensions.zotero.researchannotator.chatMaxChars", 0);
+pref("extensions.zotero.researchannotator.chatIncludeAnnotations", true);
+pref("extensions.zotero.researchannotator.chatIncludeNotes", true);
+// Chat can propose note edits, additions or creation, but nothing
+// is written until an explicit Apply action.
+pref("extensions.zotero.researchannotator.chatEditNotes", true);
+// Remember selected Chat collections separately for each library:
+// JSON maps libraryID to keys and sub; empty means the whole library.
+pref("extensions.zotero.researchannotator.chatCollections", "");
+// Historical library scope limits how many items enter model context.
+pref("extensions.zotero.researchannotator.chatLibraryItems", 8);
+// Additional Chat preferences such as tone, language and formatting.
+pref("extensions.zotero.researchannotator.chatInstructions", "");
+// Show Ask ResearchAnnotator in the reader selection popup.
+pref("extensions.zotero.researchannotator.chatSelectionButton", true);
+// Chat history remains in the compatibility file annota-chats.json.
+pref("extensions.zotero.researchannotator.chatKeepHistory", true);
+// The Chat shortcut uses Command on macOS or Control plus this
+// letter; empty disables it without removing the toolbar button.
+pref("extensions.zotero.researchannotator.chatShortcut", "J");
 
 // ---- Interface ----
-// Langue : "auto" (celle de Zotero), "en" ou "fr".
-pref("extensions.zotero.annota.uiLanguage", "auto");
+// Language: "auto" (Zotero language), "en" or "fr".
+pref("extensions.zotero.researchannotator.uiLanguage", "auto");
 
-// ---- Orthographe et grammaire (macOS, NSSpellChecker) ----
-// Langue : "auto" (détection par macOS) ou un code de langue (fr, en…).
-pref("extensions.zotero.annota.spellLanguage", "auto");
-pref("extensions.zotero.annota.spellGrammar", true);
-// Vérification pendant la frappe : notes et commentaires d'annotation.
-pref("extensions.zotero.annota.spellLive", true);
+// ---- Spelling and grammar (macOS, NSSpellChecker) ----
+// Language: auto uses platform detection, otherwise use a language code.
+pref("extensions.zotero.researchannotator.spellLanguage", "auto");
+pref("extensions.zotero.researchannotator.spellGrammar", true);
+// Live checking applies to notes and native annotation Comments.
+pref("extensions.zotero.researchannotator.spellLive", true);
 
-// Champs de la couleur dans la carte d'annotation de la barre latérale du
-// lecteur, à la place du champ « Ajouter un commentaire ».
-pref("extensions.zotero.annota.cardFields", true);
+// Display color fields in the reader sidebar annotation card,
+// while retaining the independent native Comment control.
+pref("extensions.zotero.researchannotator.cardFields", true);

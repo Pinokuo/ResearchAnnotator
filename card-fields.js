@@ -1,31 +1,36 @@
 /* eslint-disable no-undef */
-// Annota — champs de la couleur dans la carte d'annotation de la barre
-// latérale du lecteur, à la place du champ unique « Ajouter un commentaire ».
+// Structured color fields in reader sidebar annotation cards,
+// alongside the independent native Comment control.
 //
-// Accroche : l'en-tête de la carte (point d'extension officiel
-// « renderSidebarAnnotationHeader » du lecteur). Depuis l'élément accroché,
-// on remonte à la carte (.preview) et l'on place le formulaire après le
-// passage (.text), en masquant le commentaire natif (.comment), que Zotero
-// n'affiche que si la carte est sélectionnée ou commentée : le formulaire
-// suit la même règle. Un MutationObserver remet les choses en place quand le
-// lecteur redessine la carte sans rappeler l'accroche (changement de
-// sélection).
+// Use the official renderSidebarAnnotationHeader hook to locate
+// the annotation card from its header attachment.
+// Insert the form after the source passage, retaining native
+// Comment independently. A MutationObserver restores placement
+// when the reader redraws a card without invoking the hook,
+// including selection changes.
+// Show the form under the existing card visibility rules.
+// Do not treat native Comment as the structured field store.
 //
-// Les valeurs des champs ne se déduisent pas toujours du commentaire (un
-// champ vide disparaît de la mise en page). Annota les mémorise donc pour
-// chaque annotation qu'il écrit (annota-fields.json, dossier de données de
-// Zotero) ; pour un commentaire plus ancien, elles sont relues ligne par
-// ligne d'après le format de chaque champ. Un commentaire qui ne s'y prête
-// pas (écrit à la main, mise en page personnalisée inconnue) garde le champ
-// natif de Zotero : rien n'est réécrit sans être compris.
+// Empty fields may be omitted from historical formatted output,
+// so structured values are persisted per annotation in the
+// compatibility file annota-fields.json. Older structured layouts
+// can be parsed conservatively by field order and format.
+// Unknown manually authored/custom content retains the native
+// editor; never rewrite content that cannot be interpreted safely.
+// Historical reads are migration input, not ordinary Comment writes.
 
 var AnnotaCardFields = {
 	_listener: null,
 	_store: null,
 	_loading: null,
 	_saveTimer: null,
+	_writeQueue: Promise.resolve(),
+	_saveQueue: Promise.resolve(),
+	_views: new Map(),
+	_generationStates: new Map(),
+	_fieldGenerationStates: new Map(),
 
-	// ---- Mémoire des valeurs ----
+	// Structured value persistence.
 
 	file() {
 		let dir;
@@ -35,55 +40,306 @@ var AnnotaCardFields = {
 	},
 
 	load() {
-		if (this._store) return Promise.resolve(this._store);
-		if (this._loading) return this._loading;
-		this._loading = (async () => {
-			let data = {};
-			try {
-				if (await IOUtils.exists(this.file())) {
-					let j = await IOUtils.readJSON(this.file());
-					if (j && j.annotations && typeof j.annotations === "object") data = j.annotations;
-				}
-			}
-			catch (e) { log("champs de carte : mémoire illisible, ignorée : " + e); }
-			this._store = data;
-			return data;
-		})();
-		return this._loading;
-	},
+        if (this._store) return Promise.resolve(this._store);
+        if (this._loading) return this._loading;
 
-	persist() {
-		if (this._saveTimer) clearTimeout(this._saveTimer);
-		this._saveTimer = setTimeout(() => {
-			this._saveTimer = null;
-			IOUtils.writeJSON(this.file(), { version: 1, annotations: this._store || {} },
-				{ tmpPath: this.file() + ".tmp" }).catch(e => log("champs de carte : " + e));
-		}, 1000);
-	},
+        this._loading = (async () => {
+                let data = {};
+                let migrated = false;
 
-	keyOf(libraryID, key) {
-		return libraryID + "/" + key;
-	},
+                try {
+                        if (await IOUtils.exists(this.file())) {
+                                let j = await IOUtils.readJSON(this.file());
+                                if (j && j.annotations && typeof j.annotations === "object" && !Array.isArray(j.annotations)) {
+                                        data = j.annotations;
+                                        if (![2, 3].includes(j.version)) migrated = true;
+                                }
+                                else throw new Error("Invalid structured field storage format");
+                        }
+                }
+                catch (e) {
+                        // Never replace an unreadable store with an empty one.
+                        this._loading = null;
+                        throw new Error("Structured field storage could not be read: " + e);
+                }
 
-	// Appelé après chaque écriture d'un commentaire par Annota.
-	// Appelé AVANT l'enregistrement : la carte est redessinée pendant saveTx,
-	// et doit alors trouver ce commentaire en mémoire.
-	remember(item, values, references, comment) {
-		if (!item || !values) return;
-		let put = store => {
-			store[this.keyOf(item.libraryID, item.key)] = {
-				color: item.annotationColor, values, references: references || "", comment: comment || ""
-			};
-			this.persist();
-		};
-		if (this._store) { put(this._store); return; }
-		this.load().then(put).catch(e => log("champs de carte : " + e));
-	},
+                for (let [key, record] of Object.entries(data)) {
+                        if (!record || typeof record !== "object") continue;
 
-	// ---- Valeurs d'une annotation ----
+                        if (record.colors && typeof record.colors === "object") {
+                                let normalized = {};
+                                for (let [color, value] of Object.entries(record.colors)) {
+                                        if (!value || typeof value !== "object") continue;
+                                        normalized[String(color).toLowerCase()] = value;
+                                }
+                                record.colors = normalized;
+                                record.version = 2;
+                                continue;
+                        }
 
-	// Valeur brute d'une ligne de mise en page par défaut, selon le format.
-	unwrap(line, format) {
+                        if (record.values && typeof record.values === "object") {
+                                let color = String(record.color || "").toLowerCase();
+                                if (color) {
+                                        data[key] = {
+                                                version: 2,
+                                                colors: {
+                                                        [color]: {
+                                                                values: record.values,
+                                                                references: record.references || "",
+                                                                comment: record.comment || ""
+                                                        }
+                                                }
+                                        };
+                                        migrated = true;
+                                }
+                        }
+                }
+
+                this._store = data;
+
+                if (migrated) {
+                        log("Card fields: migrating stored values to color-aware version 2");
+                        this.persist();
+                }
+
+                return data;
+        })();
+
+        return this._loading;
+},
+
+persist() {
+        if (this._saveTimer) clearTimeout(this._saveTimer);
+        this._saveTimer = setTimeout(() => {
+                this._saveTimer = null;
+                const task = this._saveQueue.catch(() => {}).then(() => this.writeStore(this._store || {}));
+                this._saveQueue = task;
+                task.catch(e => log("Card fields: " + e));
+        }, 1000);
+},
+
+writeStore(store) {
+        // Serialize writes so the shared temporary path is never used concurrently.
+        const snapshot = JSON.parse(JSON.stringify({ version: 2, annotations: store }));
+        const write = this._writeQueue.catch(() => {}).then(() =>
+                IOUtils.writeJSON(this.file(), snapshot, { tmpPath: this.file() + ".tmp", flush: true }));
+        this._writeQueue = write;
+        return write;
+},
+
+saveValues(item, patch, references, expected, metadata, { strictExpected = false } = {}) {
+        if (this._maintenance) return Promise.reject(new Error("Data import is in progress. Retry editing after it completes."));
+        if (item.library?.editable === false || item.deleted) {
+                return Promise.reject(new Error("Annotation is read-only or unavailable."));
+        }
+        // New individual-annotation paths acknowledge a successful disk write.
+        // Legacy batch/review remember() callers retain their existing behavior.
+        const identity = { libraryID: item.libraryID, key: item.key,
+                annotationColor: item.annotationColor, annotationType: item.annotationType };
+        const changes = Object.assign({}, patch);
+        const task = this._saveQueue.catch(() => {}).then(async () => {
+                await this.load();
+                if (item.deleted || Annota._deletedAnnotationKeys?.has(item.libraryID + ":" + item.key)) throw new Error("Annotation is unavailable.");
+                const key = this.keyOf(identity.libraryID, identity.key);
+                const color = this.colorKeyOf(identity);
+                const previous = this.get(identity) || { values: {}, references: "", comment: "" };
+                const values = Object.assign({}, previous.values);
+                const applied = new Set();
+                for (const [name, value] of Object.entries(changes)) {
+                        // AI results must not overwrite a value changed while the request ran.
+                        if (expected && JSON.stringify(values[name] === undefined ? "" : values[name]) !== JSON.stringify(expected[name] === undefined ? "" : expected[name])) {
+                            if (strictExpected) throw new Error("This field changed in another view. Reload before saving; your draft is retained.");
+                            continue;
+                        }
+                        values[name] = value;
+                        applied.add(name);
+                }
+                const record = { values: {}, references: references === undefined
+                        ? previous.references : references, comment: previous.comment };
+                const snapshot = JSON.parse(JSON.stringify(this._store));
+                if (!snapshot[key]) snapshot[key] = { version: 2, colors: {} };
+                if (!snapshot[key].colors) snapshot[key].colors = {};
+                const globalValues = Object.assign({}, snapshot[key].globalValues || {});
+                const stableColor = typeof AnnotaPalette !== "undefined" ? AnnotaPalette.storageKey(color) : null;
+                const oldColor = (stableColor && snapshot[key].colorConfigs?.[stableColor]) || snapshot[key].colors[color] || {};
+                record.valuesByID = Object.assign({}, oldColor.valuesByID || {});
+                for (const [name, value] of Object.entries(values)) {
+                        const field = Annota.fieldByName(identity, name);
+                        if (field?.scope === "global" || Object.hasOwn(globalValues, name)) globalValues[name] = value;
+                        else {
+                                record.values[name] = value;
+                                if (field?.id && (applied.has(name) || field.name === name || !Object.hasOwn(record.valuesByID, field.id))) record.valuesByID[field.id] = value;
+                        }
+                }
+                snapshot[key].globalValues = globalValues;
+                snapshot[key].colors[color] = { ...oldColor, ...record };
+                if (stableColor) snapshot[key].colorConfigs = { ...(snapshot[key].colorConfigs || {}), [stableColor]: snapshot[key].colors[color] };
+                if (metadata) {
+                        const accepted = {};
+                        for (const [id, value] of Object.entries(metadata)) {
+                                if ([...applied].some(name => Annota.fieldByName(identity, name)?.id === id)) accepted[id] = value;
+                        }
+                        snapshot[key].aiMetadata = { ...(snapshot[key].aiMetadata || {}), ...accepted };
+                }
+                await this.writeStore(snapshot);
+                this._store[key] = snapshot[key];
+                this.refreshViews();
+                return this.get(identity);
+        });
+        this._saveQueue = task;
+        return task;
+},
+
+watch(element, refresh) {
+        this._views.set(element, refresh);
+},
+
+generationState(item) {
+        if (!item) return {};
+        return this._generationStates.get(this.keyOf(item.libraryID, item.key) + "/" + this.colorKeyOf(item)) || {};
+},
+
+fieldState(item, field) {
+        if (!item) return {};
+        const prefix = this.keyOf(item.libraryID, item.key) + "/";
+        const found = this._fieldGenerationStates.get(this.fieldStateKey(item, field));
+        if (found) return found;
+        if (typeof AnnotaInfrastructure !== "undefined") {
+                const lifecycle = AnnotaInfrastructure.lifecycle.describe(item, field);
+                if (lifecycle.state === "failed") return { ...lifecycle, error: lifecycle.error || "Generation failed; retry is available." };
+                if (lifecycle.state === "cancelled") return { ...lifecycle, error: "Generation cancelled; retry is available." };
+        }
+        if ([...this._fieldGenerationStates.keys()].some(key => key.startsWith(prefix))) return {};
+        return this.generationState(item);
+},
+fieldStateKey(item, field) {
+        return this.keyOf(item.libraryID, item.key) + "/" + (field.scope === "global" ? "global" : this.colorKeyOf(item)) + "/" + field.id;
+},
+setFieldState(item, field, state) {
+        this._fieldGenerationStates.set(this.fieldStateKey(item, field), state);
+        this.refreshViews();
+},
+fieldRetry(doc, field, getItem, saveDraft) {
+        const retry = doc.createElement("button"); retry.type = "button";
+        retry.className = "annota-popup-generate-fields"; retry.textContent = Annota.t("card.retry"); retry.hidden = true;
+        retry.style.cssText = "font:inherit;font-size:11px;padding:2px 6px;align-self:flex-start;";
+        retry.addEventListener("click", async event => {
+                event.preventDefault(); event.stopPropagation(); if (retry.disabled) return;
+                retry.disabled = true;
+                let item;
+                try { item = await getItem(); if (!item) throw new Error("Annotation is unavailable.");
+                        await saveDraft();
+                        const saved = this.get(item), regenerate = !!String(saved?.values[field.name] || "").trim() &&
+                            ["failed", "cancelled"].includes(saved?.aiMetadata?.[field.id]?.state);
+                        await Annota.requestAIFields(item, { fieldId: field.id, partial: true, regenerate }); }
+                catch (e) { if (item) this.setFieldState(item, field, { error: e.message || String(e) });
+                        else if (retry._error) retry._error.textContent = e.message || String(e);
+                        log("AI field retry: " + e); }
+                finally { retry.disabled = false; }
+        });
+        return retry;
+},
+updateFieldRetry(retry, item, field) {
+        const state = this.fieldState(item, field);
+        retry.hidden = !state.error; retry.disabled = !!state.running || !!this.generationState(item).running;
+        retry.title = state.error || "";
+        if (retry._error) retry._error.textContent = state.error || "";
+},
+
+setGenerationState(item, state) {
+        this._generationStates.set(this.keyOf(item.libraryID, item.key) + "/" + this.colorKeyOf(item), state);
+        this.refreshViews();
+},
+
+aiText(item, value) {
+        if (String(value || "").trim()) return this.plain(value);
+        return this.generationState(item).running ? "Generating..." : "Not generated yet";
+},
+
+generationMessage(item) {
+        const state = this.generationState(item);
+        return state.running ? "Generating..." : state.error || (state.saved ? Annota.t("card.saved") : "");
+},
+
+refreshViews() {
+        for (const [element, refresh] of this._views) {
+                if (!element.isConnected) { this._views.delete(element); continue; }
+                Promise.resolve().then(refresh).catch(e => log("Structured field refresh: " + e));
+        }
+},
+
+keyOf(libraryID, key) {
+        return libraryID + "/" + key;
+},
+
+colorKeyOf(item) {
+        let color = String(item && (item.annotationColor || item.color) || "").toLowerCase();
+        let type = item && (item.annotationType || item.type);
+        return type === "image" ? "image:" + color : color;
+},
+
+get(item) {
+        if (!item || !this._store) return null;
+
+        let record = this._store[this.keyOf(item.libraryID, item.key)];
+        if (!record || !record.colors) return null;
+
+        const stableColor = typeof AnnotaPalette !== "undefined" ? AnnotaPalette.storageKey(this.colorKeyOf(item)) : null;
+        let colorRecord = (stableColor && record.colorConfigs?.[stableColor]) || record.colors[this.colorKeyOf(item)] || {};
+        if (!Object.keys(colorRecord).length && !record.globalValues) return null;
+        const values = Object.assign({}, colorRecord.values || {});
+        for (const field of Annota.fieldsForColor(this.colorKeyOf(item))) {
+                if (Object.hasOwn(colorRecord.valuesByID || {}, field.id)) values[field.name] = colorRecord.valuesByID[field.id];
+                else if (!Object.hasOwn(values, field.name)) {
+                        const aliases = JSON.parse(String(getPref("fieldAliases", "{}") || "{}"))[field.id] || [];
+                        const old = aliases.find(name => Object.hasOwn(values, name));
+                        if (old) values[field.name] = values[old];
+                }
+        }
+
+        return {
+                values: Object.assign(values, record.globalValues || {}),
+                aiMetadata: Object.assign({}, record.aiMetadata || {}),
+                references: colorRecord.references || "",
+                comment: colorRecord.comment || ""
+        };
+},
+
+remember(item, values, references, comment) {
+        if (this._maintenance) throw new Error("Data import is in progress.");
+        if (!item || !values) return;
+
+        let put = store => {
+                let key = this.keyOf(item.libraryID, item.key);
+                let record = store[key];
+
+                if (!record || !record.colors || typeof record.colors !== "object") {
+                        record = { version: 2, colors: {} };
+                        store[key] = record;
+                }
+
+                record.version = 2;
+                record.colors[this.colorKeyOf(item)] = {
+                        values: Object.assign({}, values),
+                        references: references || "",
+                        comment: comment || ""
+                };
+
+                this.persist();
+        };
+
+        if (this._store) {
+                put(this._store);
+                return;
+        }
+
+        this.load().then(put).catch(e => log("Card fields: " + e));
+},
+
+// Values for one annotation.
+
+// Read a raw value from one default-layout line according to its format.
+        unwrap(line, format) {
 		let patterns = {
 			bold: /^<b>([\s\S]*)<\/b>$/,
 			italic: /^<i>([\s\S]*)<\/i>$/,
@@ -94,15 +350,15 @@ var AnnotaCardFields = {
 			let m = line.match(patterns[format]);
 			return m ? m[1] : null;
 		}
-		// Format « plain » : une ligne qui n'est pas entièrement enveloppée.
+		// Plain means the value is not entirely enclosed by formatting markup.
 		return /^<(b|i|u)>[\s\S]*<\/\1>$/.test(line) ? null : line;
 	},
 
-	// Relit un commentaire écrit avec la mise en page par défaut (une ligne
-	// par champ non vide, dans l'ordre). Une valeur peut s'étendre sur
-	// plusieurs lignes (retour à la ligne tapé dans le champ) : on préfère
-	// toujours une ligne par champ, et l'on n'élargit qu'à défaut. null si les
-	// lignes ne s'y prêtent pas.
+	// Read historical default-layout output with one nonempty field
+	// per line in declaration order. Values may contain user-entered
+	// line breaks. Prefer one line per field, widening the match only
+	// when needed; return null if the text cannot be interpreted
+	// without guessing.
 	parse(schema, comment) {
 		let lines = String(comment || "").split("\n").map(l => l.trim());
 		let n = lines.length;
@@ -129,33 +385,56 @@ var AnnotaCardFields = {
 		return match(0, 0) ? values : null;
 	},
 
-	// { values, references } ou null (commentaire non structuré).
+	// Return { values, references }, or null for unstructured content.
 	resolve(entry, schema, libraryID, annotation) {
-		let comment = String(annotation.comment || "");
-		let mem = this._store && this._store[this.keyOf(libraryID, annotation.id)];
-		if (mem && mem.comment === comment && mem.color === annotation.color) {
-			return { values: Object.assign({}, mem.values), references: mem.references || "" };
-		}
-		if (!comment.trim()) {
-			let values = {};
-			for (let f of schema) values[f.name] = "";
-			return { values, references: "" };
-		}
-		// Mise en page personnalisée : on ne devine pas.
-		if (String(entry.template || "").trim()) return null;
-		let values = this.parse(schema, comment);
-		return values ? { values, references: "" } : null;
-	},
+        let comment = String(annotation.comment || "");
+        let key = this.keyOf(libraryID, annotation.id || annotation.key);
+        let record = this._store && this._store[key];
+        let colorKey = this.colorKeyOf(annotation);
 
-	// La carte s'applique-t-elle à cette couleur ? Il faut des champs à
-	// saisir, et un commentaire construit à partir d'eux (pas de {{ai}}).
-	entryFor(color) {
-		let entry = Annota.getColorEntry(color);
-		if (!entry || Annota.entryNeedsAI(entry)) return null;
-		let schema = Annota.parseFieldSchema(entry.fields);
-		if (!schema.some(f => f.type !== "ai")) return null;
-		return { entry, schema };
-	},
+        // Never parse a comment from another color using the current schema.
+        if (record && record.colors) {
+                let saved = record.colors[colorKey];
+
+                if (saved) {
+
+                        return {
+                                values: Object.assign({}, saved.values || {}),
+                                references: saved.references || ""
+                        };
+                }
+
+                let values = {};
+                for (let f of schema) values[f.name] = "";
+                return { values, references: "" };
+        }
+
+        if (!comment.trim()) {
+                let values = {};
+                for (let f of schema) values[f.name] = "";
+                return { values, references: "" };
+        }
+
+        // Custom layouts cannot be safely reverse-engineered.
+        if (String(entry.template || "").trim()) return null;
+
+        let values = this.parse(schema, comment);
+        return values ? { values, references: "" } : null;
+},
+entryFor(color, global = false) {
+    let entry = Annota.getColorEntry(color) || (global ? { fields: "", template: "", prompt: "" } : null);
+    if (!entry) return null;
+
+    let schema = global ? Annota.annotationFields(color) : Annota.fieldsForColor(color);
+    if (!schema.length) return null;
+
+    // An AI-only schema is valid even when the color also generates
+    // a complete AI comment.
+    if (!global && Annota.entryNeedsAI(entry)
+            && !schema.some(f => f.type === "ai")) return null;
+
+    return { entry, schema };
+},
 
 	// ---- Accroche ----
 
@@ -164,13 +443,14 @@ var AnnotaCardFields = {
 		this.load().catch(() => {});
 		this._listener = (event) => {
 			try { this.onHeader(event); }
-			catch (e) { log("champs de carte : " + e); }
+			catch (e) { log("Card fields: " + e); }
 		};
 		Zotero.Reader.registerEventListener("renderSidebarAnnotationHeader",
-			this._listener, "annota@equiriconi");
+			this._listener, "researchannotator@pino");
 	},
 
 	unregister() {
+		this._views.clear();
 		try {
 			if (this._listener && Zotero.Reader && Zotero.Reader.unregisterEventListener) {
 				Zotero.Reader.unregisterEventListener("renderSidebarAnnotationHeader", this._listener);
@@ -178,7 +458,7 @@ var AnnotaCardFields = {
 		}
 		catch (e) {}
 		this._listener = null;
-		// Cartes déjà transformées : on rend le champ natif.
+		// Restore native controls when removing transformed cards.
 		for (let r of (Zotero.Reader && Zotero.Reader._readers) || []) {
 			try {
 				let doc = r._iframeWindow && r._iframeWindow.document;
@@ -201,24 +481,23 @@ var AnnotaCardFields = {
 		let annotation = params && params.annotation;
 		if (!annotation || !reader || !doc || !append) return;
 		if (!["highlight", "underline", "image"].includes(annotation.type)) return;
-		// Le document de l'évènement arrive sans vue Xray (wrappedJSObject) :
-		// la page ne lirait pas les objets transmis par le plugin (options
-		// de MutationObserver.observe, notamment). On reprend la vue Xray.
+		// Reader event documents can arrive without Xray wrappers.
+		// Use a safe Xray wrapper so content can read extension option objects.
+		// including MutationObserver.observe). Use the Xray view again.
 		try { doc = Components.utils.unwaiveXrays(doc); }
-		catch (e) { /* déjà une vue Xray */ }
-		// Élément accroché à l'en-tête : il situe la carte dans le document et
-		// porte le bouton « Compléter avec l'IA » (masqué si la couleur
-		// n'appelle pas le modèle).
+		catch (e) { /* The object already has the appropriate Xray view. */ }
+		// The header hook identifies the card and hosts explicit AI
+		// completion where policy and missing-field state permit it.
+		// Hide redundant generation controls when not applicable.
 		this.injectStyle(doc);
 		let mark = doc.createElement("span");
 		mark.className = "annota-card-hook";
 		mark.style.display = "none";
-		mark.appendChild(this.aiButton(doc));
 		append(mark);
 		let card = mark.closest(".preview");
 		if (!card) return;
-		// En tête des sections ajoutées par les plugins : avant le bouton de
-		// traduction, juste après l'auteur.
+		// Place extension header actions before translation and immediately
+		// after the annotation author.
 		let section = mark.parentElement;
 		let host = section && section.parentElement;
 		if (host && host.firstChild !== section) host.insertBefore(section, host.firstChild);
@@ -227,37 +506,46 @@ var AnnotaCardFields = {
 		if (!card._annotaObserver) {
 			let obs = new doc.defaultView.MutationObserver(() => {
 				if (card._annotaBusy) return;
-				this.ensure(card).catch(e => log("champs de carte : " + e));
+				this.ensure(card).catch(e => log("Card fields: " + e));
 			});
 			obs.observe(card, { childList: true });
 			card._annotaObserver = obs;
 		}
-		this.ensure(card).catch(e => log("champs de carte : " + e));
+		this.ensure(card).catch(e => log("Card fields: " + e));
 	},
 
-	// Place, met à jour ou retire le formulaire de la carte.
+	// Place, refresh or remove the card form.
 	async ensure(card) {
 		let { reader, annotation } = card._annotaCtx || {};
 		if (!annotation) return;
 		let doc = card.ownerDocument;
 		let form = card.querySelector(":scope > .annota-card-form");
 		let native = card.querySelector(":scope > .comment");
-		let cfg = this.entryFor(Annota.colorKey(annotation.color, annotation.type));
+		let cfg = this.entryFor(Annota.colorKey(annotation.color, annotation.type), true);
 		let att = Zotero.Items.get(reader.itemID);
 		if (!this._store) await this.load();
-		let resolved = cfg && att ? this.resolve(cfg.entry, cfg.schema, att.libraryID, annotation) : null;
+		// Native Comment is independent. Do not infer new field values from it.
+		let resolved = cfg && att ? this.get({ libraryID: att.libraryID,
+			key: annotation.id, color: annotation.color, type: annotation.type }) || { values: {}, references: "" } : null;
+		const identity = { libraryID: att?.libraryID, key: annotation.id,
+			color: annotation.color, type: annotation.type };
 
-		// Bouton de l'en-tête : visible même carte repliée, dès que la couleur
-		// a des champs que le modèle peut remplir.
+		// The header action can remain accessible on a collapsed card
+		// when missing AI fields and Manual policy require it.
 		let hook = card._annotaHook;
 		if (hook) {
-			let canFill = !!(cfg && resolved && !annotation.readOnly && Annota.entryUsesProvider(cfg.entry));
+			let canFill = !!cfg && !annotation.readOnly && Annota.canGenerateAIFields(identity);
 			hook.style.display = canFill ? "inline-flex" : "none";
+			const button = hook.querySelector(".annota-card-ai-btn");
+			if (button) {
+				button.hidden = !canFill;
+				button.disabled = !!this.generationState(identity).running;
+			}
 		}
 
-		// Zotero n'affiche le commentaire que pour une carte sélectionnée ou
-		// commentée : sans lui, pas de formulaire non plus.
-		if (!cfg || !resolved || !native || annotation.readOnly) {
+		// Zotero normally shows native Comment for selected or populated
+		// cards; maintain compatible structured-form visibility.
+		if (!cfg || !resolved || annotation.readOnly) {
 			card._annotaBusy = true;
 			if (form) form.remove();
 			if (native) native.style.removeProperty("display");
@@ -267,18 +555,49 @@ var AnnotaCardFields = {
 
 		card._annotaBusy = true;
 		try {
-			if (!form || form._annotaColor !== annotation.color) {
-				if (form) form.remove();
-				form = this.build(doc, card, cfg);
-				form._annotaColor = annotation.color;
+			const schemaChanged = form && (
+			        JSON.stringify(form._schema || []) !== JSON.stringify(cfg.schema)
+			        || cfg.schema.some(field => {
+			                const existing = form._fields && form._fields[field.name];
+			                return !existing
+			                        || (field.type === "ai") !== !!existing.ai
+			                        || !form.contains(existing.row || existing.el);
+			        })
+			);
+
+			if (!form || form._annotaColor !== annotation.color || schemaChanged) {
+			        if (form) form.remove();
+			        form = this.build(doc, card, cfg);
+			        form._annotaColor = annotation.color;
 			}
-			// Toujours juste avant le commentaire natif, qui reste masqué.
-			if (form.nextSibling !== native) card.insertBefore(form, native);
-			native.style.display = "none";
-			// Pas de réécriture sous les doigts : un champ en cours de saisie
-			// garde ce qui y est tapé.
+			// Place the form immediately before the independent native Comment.
+			form._itemIdentity = identity;
+			if (native) {
+			    if (form.nextSibling !== native) card.insertBefore(form, native);
+			    native.style.removeProperty("display");
+			}
+			else if (form.parentNode !== card || form !== card.lastElementChild) {
+			    card.appendChild(form);
+			}
+			// Do not rerender over active typing; keep the user's current
+			// draft in the focused field.
 			if (!form.contains(doc.activeElement) && !form._dirty) this.fill(form, resolved);
+			else {
+				// AI results refresh even while a manual draft has focus.
+				for (const [name, field] of Object.entries(form._fields)) {
+					if (!field.ai) continue;
+					const value = resolved.values[name] || "";
+					Annota.renderAIField(field.el, field.f, value, identity);
+					if (!form._raw) form._raw = {};
+					form._raw[name] = value;
+				}
+			}
 			form._annotaRefs = resolved.references;
+			for (const field of Object.values(form._fields)) {
+				if (field.retry) this.updateFieldRetry(field.retry, identity, field.f);
+			}
+			const message = this.generationMessage(identity);
+			if (message) form._status.textContent = message;
 		}
 		finally {
 			card._annotaBusy = false;
@@ -287,9 +606,9 @@ var AnnotaCardFields = {
 
 	// ---- Formulaire ----
 
-	// La marge est imposée (!important) : la règle qui neutralise .label-popup
-	// (Annota._ensureFormStyles) remet sinon padding et margin à zéro.
-	CSS: ".annota-card-form{display:flex;flex-direction:column;gap:6px;"
+	// Force the intended form margin because the label-popup reset
+	// otherwise removes both margin and padding.
+	CSS: ".annota-card-form{display:flex;flex-direction:column;gap:4px;"
 		+ "box-sizing:border-box;width:100%;}"
 		+ ".annota-fields.annota-card-form{padding:4px 10px 8px !important;}"
 		+ ".annota-card-form .annota-card-label{font-size:11px;opacity:.6;margin-bottom:1px;}"
@@ -306,7 +625,7 @@ var AnnotaCardFields = {
 		+ ".annota-card-form .annota-card-status{font-size:10.5px;opacity:.55;}"
 		+ ".annota-card-hook{align-items:center;}"
 		+ ".annota-card-ai-btn{appearance:none;display:inline-flex;align-items:center;justify-content:center;"
-		+ "width:22px;height:22px;margin:0;padding:0;border:0;border-radius:5px;background:transparent;"
+		+ "min-height:20px;margin:0;padding:2px 6px;font:inherit;font-size:11px;border:1px solid rgba(128,128,128,.3);border-radius:4px;background:transparent;"
 		+ "color:inherit;opacity:.7;cursor:pointer;}"
 		+ ".annota-card-ai-btn:hover{opacity:1;background:rgba(128,128,128,.18);}"
 		+ ".annota-card-ai-btn[disabled]{cursor:default;}"
@@ -322,17 +641,23 @@ var AnnotaCardFields = {
 		(doc.head || doc.documentElement).appendChild(st);
 	},
 
-	build(doc, card, cfg) {
+	build(doc, card, cfg, options = {}) {
 		this.injectStyle(doc);
 		let form = doc.createElement("div");
-		// label-popup : le lecteur n'efface pas l'annotation sélectionnée quand
-		// on corrige un champ avec Suppr (voir Annota.FORM_CLASS).
+		// The label-popup class shields the selected annotation from Delete
+		// while a field is edited; see Annota.FORM_CLASS.
 		form.className = Annota.FORM_CLASS + " annota-card-form";
 		form._fields = {};
+		form._changed = new Set();
 		form._schema = cfg.schema;
+        form._flushDraft = async () => {
+            if (form._timer) { doc.defaultView.clearTimeout(form._timer); form._timer = null; }
+            if (form._dirty) await (options.save ? options.save(form) : this.save(card, form));
+        };
+		this.watch(form, options.refresh || (() => this.ensure(card)));
 
-		// La carte réagit aux clics (sélection) et au glisser : le formulaire
-		// garde les siens pour lui, mais laisse la carte se sélectionner.
+		// Cards use click and drag selection; let the form handle its own
+		// controls while allowing the parent card to become selected.
 		for (let type of ["keydown", "keypress", "keyup"]) {
 			form.addEventListener(type, e => e.stopPropagation());
 		}
@@ -341,12 +666,24 @@ var AnnotaCardFields = {
 
 		for (let f of cfg.schema) {
 			if (f.type === "ai") {
-				let p = doc.createElement("div");
-				p.className = "annota-card-ai";
-				p.title = f.label;
-				form.appendChild(p);
-				form._fields[f.name] = { f, el: p, ai: true };
-				continue;
+			    let row = doc.createElement("div");
+			    row.className = "annota-card-ai-row";
+			    Annota._styleStructuredField(row, f);
+			    let label = doc.createElement("div");
+			    label.className = "annota-card-label";
+			    label.textContent = f.label;
+			    row.appendChild(label);
+			    let p = doc.createElement("div");
+			    p.className = "annota-card-ai";
+			    row.appendChild(p);
+			    const retry = this.fieldRetry(doc, f, () => this.item(card), () => this.save(card, form));
+			    const error = doc.createElement("div"); error.className = "annota-field-error"; error.setAttribute("role", "status");
+			    retry._error = error; row.appendChild(error); row.appendChild(retry);
+			    form.appendChild(row);
+			    form._fields[f.name] = {
+			        f, el: p, ai: true, row, retry
+			    };
+			    continue;
 			}
 			let row = doc.createElement("div");
 			let el;
@@ -365,7 +702,10 @@ var AnnotaCardFields = {
 				lab.className = "annota-card-label";
 				lab.textContent = f.label;
 				row.appendChild(lab);
-				if (f.type === "select") {
+				if (f.type === "multiselect") {
+					el = Annota.createMultiSelect(doc, f, [], () => onEdit());
+				}
+				else if (f.type === "select") {
 					el = doc.createElement("select");
 					for (let o of [""].concat(f.options)) {
 						let opt = doc.createElement("option");
@@ -375,8 +715,8 @@ var AnnotaCardFields = {
 					}
 				}
 				else {
-					// Zone de texte pour tous : elle s'agrandit avec le contenu et
-					// passe à la ligne, ce que la barre latérale étroite exige.
+					// Use expanding, wrapping textareas for text values to fit
+					// the narrow reader sidebar.
 					el = doc.createElement("textarea");
 					el.rows = 1;
 					el.addEventListener("input", () => this.grow(el));
@@ -384,21 +724,25 @@ var AnnotaCardFields = {
 						el.addEventListener("keydown", e => { if (e.key === "Enter") e.preventDefault(); });
 					}
 				}
-				el.className = "annota-card-input";
+				el.classList.add("annota-card-input");
 				row.appendChild(el);
 			}
-			// « content » : la liste des annotations ne vole pas les flèches.
+			// The content marker prevents the annotation list from stealing arrow keys.
 			el.classList.add("content");
 			Annota._shieldFromReaderShortcuts(el, f.type === "text" ? "textarea" : f.type);
 			el.setAttribute("aria-label", f.label);
 			let onEdit = () => {
+				form._changed.add(f.name);
 				form._dirty = true;
-				this.schedule(card, form, 700);
+				if (!options.save) this.schedule(card, form, 700);
 			};
-			el.addEventListener("input", onEdit);
-			el.addEventListener("change", onEdit);
-			el.addEventListener("blur", () => { if (form._dirty) this.schedule(card, form, 0); });
+			if (f.type !== "multiselect") {
+				el.addEventListener("input", onEdit);
+				el.addEventListener("change", onEdit);
+			}
+			el.addEventListener("blur", () => { if (form._dirty && !options.save) this.schedule(card, form, 0); });
 			form._fields[f.name] = { f, el };
+			Annota._styleStructuredField(row, f);
 			form.appendChild(row);
 		}
 
@@ -412,42 +756,25 @@ var AnnotaCardFields = {
 		return form;
 	},
 
-	// Petit bouton à icône de l'en-tête de la carte, à côté de « … ».
+	// Compact header icon button beside the native overflow control.
 	aiButton(doc) {
-		let b = doc.createElement("button");
-		b.type = "button";
-		b.className = "annota-card-ai-btn";
-		b.title = Annota.t("card.fill") + " · " + Annota.t("card.fill.title");
-		b.setAttribute("aria-label", Annota.t("card.fill"));
-		let NS = "http://www.w3.org/2000/svg";
-		let svg = doc.createElementNS(NS, "svg");
-		svg.setAttribute("width", "16");
-		svg.setAttribute("height", "16");
-		svg.setAttribute("viewBox", "0 0 16 16");
-		svg.setAttribute("fill", "none");
-		// Deux étincelles : la grande à quatre branches, la petite en haut.
-		for (let d of ["M6.5 2.5 L7.6 6.4 L11.5 7.5 L7.6 8.6 L6.5 12.5 L5.4 8.6 L1.5 7.5 L5.4 6.4 Z",
-			"M12.5 1.5 L13 3 L14.5 3.5 L13 4 L12.5 5.5 L12 4 L10.5 3.5 L12 3 Z",
-			"M12 10 L12.4 11.1 L13.5 11.5 L12.4 11.9 L12 13 L11.6 11.9 L10.5 11.5 L11.6 11.1 Z"]) {
-			let p = doc.createElementNS(NS, "path");
-			p.setAttribute("d", d);
-			p.setAttribute("fill", "currentColor");
-			svg.appendChild(p);
+		const button = doc.createElement("button");
+		button.type = "button";
+		button.className = "annota-card-ai-btn";
+		button.textContent = "Generate AI Fields";
+		button.title = "Generate AI Fields";
+		button.setAttribute("aria-label", "Generate AI Fields");
+		button.hidden = true;
+		for (const type of ["mousedown", "pointerdown", "dragstart"]) {
+			button.addEventListener(type, event => event.stopPropagation());
 		}
-		b.appendChild(svg);
-		// L'en-tête sélectionne la carte et se glisse : le bouton garde ses
-		// clics pour lui.
-		for (let type of ["mousedown", "pointerdown", "dragstart"]) {
-			b.addEventListener(type, e => e.stopPropagation());
-		}
-		b.addEventListener("click", (e) => {
-			e.preventDefault();
-			e.stopPropagation();
-			let card = b.closest(".preview");
-			if (!card || b.disabled) return;
-			this.fillWithAI(card, b).catch(err => log("champs de carte : " + err));
+		button.addEventListener("click", event => {
+			event.preventDefault(); event.stopPropagation();
+			const card = button.closest(".preview");
+			if (!card || button.disabled || button.hidden) return;
+			this.fillWithAI(card, button).catch(error => log("Structured fields retry: " + error));
 		});
-		return b;
+		return button;
 	},
 
 	grow(el) {
@@ -458,10 +785,10 @@ var AnnotaCardFields = {
 			el.style.height = h + "px";
 			return;
 		}
-		// Carte dessinée avant d'être affichée (ouverture d'une référence) :
-		// la hauteur mesurée vaut zéro et le champ restait écrasé jusqu'au
-		// premier clic. On garde la hauteur naturelle et on recalcule dès que
-		// le champ prend sa taille.
+		// A card can render before becoming visible, producing zero measured
+		// height. Retain natural height and recalculate once visible instead
+		// of leaving the text field collapsed until the next click.
+		// Observe its actual rendered size.
 		el.style.height = "";
 		this.growWhenShown(el);
 	},
@@ -482,7 +809,7 @@ var AnnotaCardFields = {
 		ro.observe(el);
 	},
 
-	// Valeur d'un champ pour la saisie : sans balises ni entités.
+	// Manual input values omit markup and decode entities.
 	plain(raw) {
 		return String(raw || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "")
 			.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"")
@@ -492,29 +819,37 @@ var AnnotaCardFields = {
 	fill(form, resolved) {
 		form._raw = Object.assign({}, resolved.values);
 		for (let name of Object.keys(form._fields)) {
-			let { f, el, ai } = form._fields[name];
+			let { f, el, ai, row } = form._fields[name];
 			let v = resolved.values[name] || "";
 			if (ai) {
-				el.textContent = this.plain(v);
-				el.style.display = v ? "" : "none";
-				continue;
+			    Annota.renderAIField(el, f, v, form._itemIdentity);
+			    row.style.display = "";
+			    continue;
 			}
-			if (f.type === "check") el.checked = !!v;
+			if (f.type === "multiselect") el.setValues(v || []);
+			else if (f.type === "check") el.checked = /^(true|yes|oui|1|x|✓)$/i.test(String(v));
 			else {
-				el.value = this.plain(v);
+				const shown = this.plain(Annota.fieldDisplayValue(f, v));
+				if (f.type === "select" && v && !Array.from(el.options).some(o => o.value === shown)) {
+					const option = el.ownerDocument.createElement("option");
+					option.value = option.textContent = shown;
+					el.appendChild(option);
+				}
+				el.value = shown;
 				this.grow(el);
 			}
 		}
 	},
 
-	// Valeurs du formulaire. Un champ non modifié garde sa valeur d'origine,
-	// mise en forme intérieure comprise (« plain » en a ôté les balises).
+	// Unchanged fields retain their original stored value, including
+	// internal formatting stripped only from the editing presentation.
 	read(form) {
 		let values = {};
 		for (let name of Object.keys(form._fields)) {
 			let { f, el, ai } = form._fields[name];
 			let raw = (form._raw && form._raw[name]) || "";
 			if (ai) { values[name] = raw; continue; }
+			if (f.type === "multiselect") { values[name] = el.readValues(); continue; }
 			let v = f.type === "check" ? (el.checked ? "true" : "") : String(el.value || "").trim();
 			values[name] = (f.type !== "check" && v === this.plain(raw).trim()) ? raw : v;
 		}
@@ -527,7 +862,7 @@ var AnnotaCardFields = {
 		form._timer = w.setTimeout(() => {
 			form._timer = null;
 			this.save(card, form).catch(e => {
-				log("champs de carte : " + e);
+				log("Card fields: " + e);
 				form._status.textContent = Annota.t("card.error");
 			});
 		}, delay);
@@ -540,7 +875,7 @@ var AnnotaCardFields = {
 		return Zotero.Items.getByLibraryAndKeyAsync(att.libraryID, annotation.id);
 	},
 
-	// Commentaire recomposé selon la mise en page de la couleur.
+	// Rebuild structured output from the configured color layout.
 	compose(item, form, values) {
 		let entry = Annota.getColorEntry(Annota.keyForItem(item));
 		let ctx = Annota.getContext(item);
@@ -552,74 +887,48 @@ var AnnotaCardFields = {
 	},
 
 	async save(card, form) {
-		let item = await this.item(card);
-		if (!item) return;
-		let values = this.read(form);
-		let comment = this.compose(item, form, values);
-		form._dirty = false;
-		if (comment === String(item.annotationComment || "")) return;
-		this.remember(item, values, form._annotaRefs, comment);
-		item.annotationComment = comment;
-		Annota.setFailedTag(item, false);
-		await item.saveTx();
-		form._raw = Object.assign({}, values);
+		const item = await this.item(card);
+		if (!item) throw new Error("Annotation is no longer available.");
+		const values = this.read(form);
+		const patch = {};
+		for (const [name, field] of Object.entries(form._fields)) {
+			if (!field.ai && form._changed.has(name)) patch[name] = values[name];
+		}
+		const saved = await this.saveValues(item, patch);
+		// Keep dirty state if the user typed again while the write was running.
+		const current = this.read(form);
+		for (const [name, value] of Object.entries(patch)) {
+			if (JSON.stringify(current[name]) === JSON.stringify(value)) form._changed.delete(name);
+		}
+		form._dirty = form._changed.size > 0;
+		form._raw = Object.assign({}, saved.values);
+		await Annota._syncPaperResearchNote(item);
+		if (!form._dirty && card.isConnected) await this.ensure(card);
 		form._status.textContent = Annota.t("card.saved");
-		card.ownerDocument.defaultView.setTimeout(() => { form._status.textContent = ""; }, 1500);
 	},
 
-	// Le modèle remplit les champs restés vides, comme à la création ; ce qui
-	// est tapé n'est jamais réécrit.
 	async fillWithAI(card, button) {
-		let notReady = Annota.providerReadyError();
-		if (notReady) {
-			toast("Annota", notReady, "error");
-			return;
-		}
-		// Carte repliée : pas de formulaire, on part des valeurs connues.
-		let form = card.querySelector(":scope > .annota-card-form");
-		let setStatus = (msg) => { if (form && form._status) form._status.textContent = msg; };
+		const form = card.querySelector(":scope > .annota-card-form");
+		const setStatus = msg => { if (form && form._status) form._status.textContent = msg; };
 		if (form && form._timer) {
 			card.ownerDocument.defaultView.clearTimeout(form._timer);
 			form._timer = null;
 		}
-		let item = await this.item(card);
-		if (!item) return;
-		let cfg = this.entryFor(Annota.keyForItem(item));
-		if (!cfg) return;
-		let known = form ? null
-			: this.resolve(cfg.entry, cfg.schema, item.libraryID, card._annotaCtx.annotation);
-		if (!form && !known) return;
 		button.disabled = true;
 		button.classList.add("annota-busy");
 		setStatus(Annota.t("card.filling"));
 		try {
-			// Zone encadrée : le texte qu'elle contient tient lieu de passage.
-			let text = item.annotationType === "image"
-				? await Annota.areaText(item) : (item.annotationText || "").trim();
-			let values = form ? this.read(form) : known.values;
-			let built = {};
-			let comment = await Annota.buildComment({
-				text, ctx: Annota.getContext(item), color: Annota.keyForItem(item),
-				comment: "", fields: values,
-				getRefs: () => Annota.getReferences(item, text), out: built
-			});
-			if (comment === null) return;
-			let filled = built.values || values;
-			let refs = built.refs || (form && form._annotaRefs) || (known && known.references) || "";
-			this.remember(item, filled, refs, comment);
-			item.annotationComment = comment;
-			Annota.setFailedTag(item, false);
-			await item.saveTx();
-			if (form) {
-				form._annotaRefs = refs;
-				form._dirty = false;
-				this.fill(form, { values: filled });
-			}
+			const item = await this.item(card);
+			if (!item) throw new Error("Annotation is no longer available.");
+			// Commit any manual draft first. Generation never writes Comment.
+			if (form && form._dirty) await this.save(card, form);
+			await Annota.requestAIFields(item);
+			await this.ensure(card);
 			setStatus(Annota.t("card.saved"));
 		}
 		catch (e) {
-			setStatus(Annota.t("card.error"));
-			toast("Annota", Annota.t("gen.failed", { msg: e.message || e }), "error");
+			setStatus(Annota.t("gen.failed", { msg: e.message || e }));
+			toast("ResearchAnnotator", Annota.t("gen.failed", { msg: e.message || e }), "error");
 		}
 		finally {
 			button.disabled = false;

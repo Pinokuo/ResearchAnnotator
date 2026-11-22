@@ -1,41 +1,41 @@
 /* eslint-disable no-undef */
-// Annota — discussion avec le document ouvert ou avec la bibliothèque.
+// Research Chat with a document or selected library sources.
 //
-// Chargé par bootstrap.js dans sa propre portée globale : Annota, getPref, log
-// et toast y sont visibles.
+// Loaded into bootstrap.js's scope, where the compatibility globals
+// Annota, getPref, log and toast are available.
 //
-// Présentation calquée sur Beaver : un panneau latéral pleine hauteur qui
-// prend la place du volet de droite, dans la bibliothèque (#zotero-item-pane)
-// comme dans le lecteur (#zotero-context-pane). Un bouton de la barre des
-// onglets et ⌘/Ctrl+J l'ouvrent et le ferment ; le volet de Zotero revient tel
-// qu'il était à la fermeture.
+// The inherited full-height sidebar replaces Zotero's right pane
+// in the library and reader. The tab-toolbar button and shortcut
+// toggle it while preserving the original Zotero pane state.
+// Closing Chat restores that original pane.
+// The full-window adapter reuses the same Chat infrastructure.
 //
-// Aucun fournisseur nouveau : la discussion emploie ceux déjà réglés pour les
-// annotations (API, Ollama, Claude CLI, Apple). Elle peut en choisir un autre,
-// et un autre modèle, sans rien changer aux annotations.
+// Reuse configured providers rather than introducing another system.
+// annotation providers (API, Ollama, Claude CLI, Apple). Chat may select another,
+// Chat can choose its own model without changing annotation settings.
 //
-// Deux portées :
-//   document     texte intégral page par page, annotations, notes et notice ;
-//                le modèle cite les pages [p. 12], rendues en pastilles qui
-//                ouvrent la page.
-//   bibliothèque recherche Zotero sur les mots de la question ; le modèle cite
-//                les items [1], [2], pastilles qui sélectionnent l'item.
+// Historical context scopes:
+// document includes page text, annotations, notes and metadata;
+// page citations are rendered as navigation controls.
+// open the page.
+// Library searches use question terms and render numbered
+// item citations that select the original item.
 
 var AnnotaChat = {
 	HTML_NS: "http://www.w3.org/1999/xhtml",
 	SVG_NS: "http://www.w3.org/2000/svg",
-	PLUGIN_ID: "annota@equiriconi",
+	PLUGIN_ID: "researchannotator@pino",
 
-	_windows: new Map(),         // fenêtre principale → { button, panes, visible… }
-	_conversations: new Map(),   // clé (référence ou bibliothèque) → conversation active
-	_history: null,              // toutes les conversations, la plus récente d'abord
+	_windows: new Map(),         // Main-window records contain button, panes and visibility state.
+	_conversations: new Map(),   // Reference/library context key maps to its active conversation.
+	_history: null,              // All conversations, newest first.
 	_historyLoading: null,
 	_saveTimer: null,
-	_pageCache: new Map(),       // id de pièce jointe → { pages, paged, source }
+	_pageCache: new Map(),       // Attachment ID maps to pages, paging status and extraction source.
 	_notifierID: null,
-	_hidden: new WeakMap(),      // élément masqué → display d'origine
+	_hidden: new WeakMap(),      // Hidden element maps to its original display value.
 
-	// Au-delà, l'extraction page par page coûte plus qu'elle ne rapporte.
+	// Beyond this limit, page-by-page extraction costs more than it helps.
 	MAX_PAGES: 600,
 
 	PROVIDER_LABELS: {
@@ -45,14 +45,14 @@ var AnnotaChat = {
 		apple: "Apple Intelligence"
 	},
 
-	// Contexte envoyé par défaut, en caractères, selon le fournisseur. Un
-	// modèle local a une fenêtre étroite : Ollama tronque en silence au-delà
-	// de son num_ctx (4096 jetons par défaut), Apple ne dépasse pas 4096
-	// jetons en tout. Les modèles distants et Claude encaissent un article
+	// Default character budgets depend on the provider. Local models
+	// often have smaller context windows: Ollama can silently truncate
+	// beyond num_ctx, and Apple has a small total-token capacity.
+	// Remote providers and Claude can accommodate larger source contexts.
 	// entier.
 	AUTO_BUDGET: { openai: 100000, ollama: 12000, cli: 200000, apple: 6000 },
 
-	// Mots vides, pour ne chercher que ce qui porte le sens de la question.
+	// Exclude stop words when selecting meaningful query terms.
 	STOPWORDS: new Set((
 		"the and for are but not you all any can had her was one our out has have "
 		+ "what when where which who whom why how this that these those with from "
@@ -73,20 +73,20 @@ var AnnotaChat = {
 
 	// ---- Fournisseur ----
 
-	// Fournisseur de la discussion : le sien s'il est réglé, sinon celui des
+	// Use a Chat-specific provider when configured, otherwise inherit.
 	// annotations.
 	provider() {
 		let p = String(getPref("chatProvider", "") || "").trim();
 		return Annota.PROVIDERS.includes(p) ? p : Annota.provider();
 	},
 
-	// Modèle propre à la discussion ; "" = celui des annotations.
+	// An empty Chat model inherits the annotation model.
 	chatModel(p) {
 		let key = { openai: "chatModel", ollama: "chatOllamaModel", cli: "chatCliModel" }[p];
 		return key ? String(getPref(key, "") || "").trim() : "";
 	},
 
-	// Effort propre à la discussion (Claude CLI) ; "" = celui de l'onglet AI.
+	// An empty Chat CLI effort inherits the AI tab's effort setting.
 	chatEffort(p) {
 		return p === "cli" ? String(getPref("chatCliEffort", "") || "").trim() : "";
 	},
@@ -110,10 +110,10 @@ var AnnotaChat = {
 		return this.AUTO_BUDGET[p] || 40000;
 	},
 
-	// ---- Panneau latéral : installation par fenêtre ----
+	// Install the sidebar separately for each main window.
 
 	register() {
-		// Changement d'onglet : le volet de Zotero peut se réafficher, et le
+		// Tab changes can redisplay Zotero's native pane, so restore Chat state.
 		// contexte (quel PDF ?) change.
 		try {
 			this._notifierID = Zotero.Notifier.registerObserver({
@@ -122,24 +122,24 @@ var AnnotaChat = {
 					for (let rec of this._windows.values()) {
 						rec.win.setTimeout(() => {
 							try { this.apply(rec); this.refreshContexts(rec); }
-							catch (e) { log("discussion, onglet : " + e); }
+							catch (e) { log("Chat tab: " + e); }
 						}, 60);
 					}
 				}
 			}, ["tab"], "annota-chat");
 		}
-		catch (e) { log("discussion : observateur d'onglets : " + e); }
+		catch (e) { log("Chat tab observer: " + e); }
 	},
 
 	unregister() {
 		for (let conv of this._conversations.values()) {
 			if (conv.cancel) conv.cancel.cancel();
 		}
-		// Écriture en attente : faite tout de suite plutôt que perdue.
+		// Flush pending history instead of losing it on shutdown.
 		if (this._saveTimer) {
 			clearTimeout(this._saveTimer);
 			this._saveTimer = null;
-			this.writeHistory().catch(e => log("historique : " + e));
+			this.writeHistory().catch(e => log("History: " + e));
 		}
 		if (this._notifierID) {
 			try { Zotero.Notifier.unregisterObserver(this._notifierID); } catch (e) {}
@@ -167,14 +167,15 @@ var AnnotaChat = {
 		this.ensureStyles(doc);
 		let rec = { win, visible: false, timer: null, panes: {}, uncollapsed: {} };
 
-		// Bouton de la barre des onglets, avant la synchronisation (comme Beaver).
+		// Place the Chat toolbar button before synchronization controls.
 		let toolbar = doc.getElementById("zotero-tabs-toolbar");
 		if (toolbar) {
 			let btn = doc.createXULElement("toolbarbutton");
 			btn.id = "annota-tb-chat";
+            btn.setAttribute("image",Annota.rootURI+"chat.svg");btn.setAttribute("label","Research Chat");btn.setAttribute("class","zotero-tb-button");
 			let sc = this.shortcutLabel();
-			btn.setAttribute("tooltiptext", Annota.t("c.tb") + (sc ? " (" + sc + ")" : ""));
-			btn.setAttribute("aria-label", Annota.t("c.tb"));
+			btn.setAttribute("tooltiptext", "Research Chat" + (sc ? " (" + sc + ")" : ""));
+			btn.setAttribute("aria-label", "Research Chat");
 			btn.addEventListener("command", () => this.toggle(win));
 			let sync = toolbar.querySelector("#zotero-tb-sync");
 			if (sync) toolbar.insertBefore(btn, sync);
@@ -194,8 +195,8 @@ var AnnotaChat = {
 		mount("annota-pane-library", "library", doc.getElementById("zotero-item-pane"));
 		mount("annota-pane-reader", "reader", doc.getElementById("zotero-context-pane"));
 
-		// ⌘/Ctrl+J, comme Beaver. Inopérant quand le PDF a le focus : le
-		// lecteur est un document à part, dont les touches ne remontent pas.
+		// The main-window shortcut cannot work while the reader document
+		// has focus because its keyboard events do not bubble to that window.
 		rec.onKey = (e) => {
 			let key = this.shortcutKey();
 			if (!key || e.defaultPrevented || e.shiftKey || e.altKey) return;
@@ -207,10 +208,11 @@ var AnnotaChat = {
 		win.addEventListener("keydown", rec.onKey);
 
 		this._windows.set(win, rec);
+		if(typeof AnnotaWorkspace!=="undefined")AnnotaWorkspace.addToWindow(win);
 	},
 
-	// Langue changée : le panneau est reconstruit, conversations et état
-	// d'ouverture conservés.
+	// Rebuild the panel on language changes while retaining conversation
+	// identity and open/closed state.
 	relocalizeWindow(win) {
 		let rec = this._windows.get(win);
 		let open = !!(rec && rec.visible);
@@ -255,9 +257,9 @@ var AnnotaChat = {
 		this.apply(rec);
 		if (rec.visible) {
 			this.refreshContexts(rec);
-			// Le contexte suit la sélection : un relevé léger, seulement tant
-			// que le panneau est ouvert (Zotero n'expose pas d'événement de
-			// sélection stable aux modules).
+			// Refresh selected context lightly only while the sidebar is open;
+			// the inherited implementation has no stable extension-facing
+			// selection event for this purpose.
 			if (!rec.timer) rec.timer = win.setInterval(() => this.refreshContexts(rec), 700);
 			let inst = this.activeInstance(rec);
 			if (inst) win.setTimeout(() => { try { inst.input.focus(); } catch (e) {} }, 50);
@@ -287,7 +289,7 @@ var AnnotaChat = {
 		else el.style.removeProperty("display");
 	},
 
-	// Affiche le panneau à la place du volet de Zotero, ou rend le volet.
+	// Show Chat in place of the native pane, or restore that pane.
 	apply(rec) {
 		let { win } = rec, doc = win.document;
 		let show = rec.visible;
@@ -297,7 +299,7 @@ var AnnotaChat = {
 			rec.button.setAttribute("aria-pressed", show ? "true" : "false");
 		}
 
-		// Bibliothèque.
+		// Library pane.
 		let lib = rec.panes.library;
 		let itemPane = doc.getElementById("zotero-item-pane");
 		if (lib && itemPane) {
@@ -318,8 +320,8 @@ var AnnotaChat = {
 			}
 		}
 
-		// Lecteur. En disposition empilée, le volet de contexte occupe tout
-		// le lecteur : le panneau se loge alors dans sa bande inférieure.
+		// Reader pane; with stacked layout the context pane fills the reader,
+		// so Chat occupies its lower band.
 		let rd = rec.panes.reader;
 		let ctxPane = doc.getElementById("zotero-context-pane");
 		if (rd && ctxPane) {
@@ -353,8 +355,8 @@ var AnnotaChat = {
 
 	// ---- Contexte courant ----
 
-	// Référence dont on parle : le PDF de l'onglet de lecture, ou l'item
-	// sélectionné dans la bibliothèque. Sans sélection unique, la bibliothèque.
+	// Use the current reader PDF or uniquely selected library publication;
+	// otherwise the context is the library.
 	contextFor(inst) {
 		let win = inst.win;
 		if (inst.location === "reader") {
@@ -383,7 +385,7 @@ var AnnotaChat = {
 		if (!rec.visible) return;
 		if (!this._history) {
 			this.loadHistory().then(() => this.refreshContexts(rec))
-				.catch(e => log("historique : " + e));
+				.catch(e => log("History: " + e));
 			return;
 		}
 		let inst = this.activeInstance(rec);
@@ -402,15 +404,15 @@ var AnnotaChat = {
 		return it || null;
 	},
 
-	// Une conversation par référence : le PDF lu dans le lecteur et sa notice
-	// dans la bibliothèque partagent la même.
+	// Reader and library views of the same publication share one
+	// conversation context.
 	keyFor(item) {
 		let top = this.topItem(item);
 		return top ? String(top.id) : null;
 	},
 
-	// PDF lu dans l'onglet courant, s'il appartient à cette référence : c'est
-	// celui dont on parle, même si la référence a plusieurs pièces jointes.
+	// Prefer the current reader attachment when it belongs to that
+	// publication, including publications with multiple PDF attachments.
 	readerAttachmentFor(top) {
 		try {
 			let win = Zotero.getMainWindow();
@@ -442,8 +444,8 @@ var AnnotaChat = {
 		return { top, att: att || null };
 	},
 
-	// Conversation active d'un contexte : celle déjà ouverte, sinon la plus
-	// récente de l'historique pour cette référence, sinon une nouvelle.
+	// Reuse the open conversation, then the newest history match,
+	// or create a new conversation for that context.
 	conversation(ctx, key) {
 		let conv = this._conversations.get(key);
 		if (!conv && this._history) conv = this._history.find(c => c.key === key) || null;
@@ -464,12 +466,12 @@ var AnnotaChat = {
 		};
 	},
 
-	// ---- Historique des discussions ----
+	// Chat history.
 	//
-	// Fichier annota-chats.json du répertoire de données de Zotero : il suit
-	// la bibliothèque (sauvegardes, déplacement du dossier) sans alourdir les
-	// préférences. Les identifiants d'items sont recalculés depuis leur clé au
-	// chargement : ils survivent ainsi à une base reconstruite.
+	// Keep the compatibility file annota-chats.json in Zotero's data directory,
+	// so backups and directory moves include it without growing preferences.
+	// Resolve numeric item IDs from stable keys on load so identities
+	// survive database reconstruction.
 
 	HISTORY_MAX: 300,
 
@@ -493,10 +495,11 @@ var AnnotaChat = {
 				let file = this.historyFile();
 				if (this.keepHistory() && await IOUtils.exists(file)) {
 					let data = await IOUtils.readJSON(file);
-					if (data && Array.isArray(data.conversations)) list = data.conversations;
+					if(data?.version!==1||!Array.isArray(data.conversations))throw Error('Unsupported Chat history document; preserved for recovery.');
+                    list=data.conversations;
 				}
 			}
-			catch (e) { log("historique illisible, ignoré : " + e); }
+			catch (e) { log("Unreadable history retained: " + e); throw Error("Chat history could not be read; the original is preserved. Retry after storage is available: "+e); }
 			for (let c of list) {
 				if (c.itemKey && c.libraryID) {
 					try { c.itemID = Zotero.Items.getIDFromLibraryAndKey(c.libraryID, c.itemKey) || null; }
@@ -508,15 +511,15 @@ var AnnotaChat = {
 			list.sort((a, b) => (b.updated || 0) - (a.updated || 0));
 			this._history = list;
 			return list;
-		})();
+		})().catch(error=>{this._historyLoading=null;throw error;});
 		return this._historyLoading;
 	},
 
-	// Une conversation entre dans l'historique à son premier message.
+	// Add a conversation to history on its first message.
 	touch(conv) {
-		// Historique pas encore lu : l'écrire maintenant effacerait le fichier.
+		// Do not overwrite an unread history file with an empty in-memory list.
 		if (!this._history) {
-			this.loadHistory().then(() => this.touch(conv)).catch(e => log("historique : " + e));
+			this.loadHistory().then(() => this.touch(conv)).catch(e => log("History: " + e));
 			return;
 		}
 		conv.updated = Date.now();
@@ -529,7 +532,7 @@ var AnnotaChat = {
 		this.scheduleSave();
 	},
 
-	// Première question, sans les citations (« > … ») qui l'introduisent.
+	// The first question excludes prefixed quoted source text.
 	titleFor(conv) {
 		let q = conv.messages.find(m => m.role === "user");
 		if (!q) return "";
@@ -544,17 +547,19 @@ var AnnotaChat = {
 		if (this._saveTimer) clearTimeout(this._saveTimer);
 		this._saveTimer = setTimeout(() => {
 			this._saveTimer = null;
-			this.writeHistory().catch(e => log("historique : " + e));
+			this.writeHistory().catch(e => log("History: " + e));
 		}, 800);
 	},
 
 	async writeHistory() {
+        // An unopened Chat has no authoritative in-memory history to flush.
+        if(!this.keepHistory()||!this._history)return;
 		let keep = (this._history || []).filter(c => c.messages.length).slice(0, this.HISTORY_MAX);
 		let data = {
 			version: 1,
 			conversations: keep.map(c => ({
 				id: c.id, itemKey: c.itemKey || "", libraryID: c.libraryID, key: c.key,
-				scope: c.scope, title: c.title, created: c.created, updated: c.updated,
+                scope: c.scope, title: c.title, created: c.created, updated: c.updated, groundedSources:c.groundedSources, retrieval:c.retrieval, diagnostics:c.diagnostics, uiState:c.uiState, _legacySourceActive:c._legacySourceActive,
 				collections: c.collections || [], subcollections: c.subcollections !== false,
 				messages: c.messages
 			}))
@@ -569,7 +574,7 @@ var AnnotaChat = {
 			if (i >= 0) this._history.splice(i, 1);
 		}
 		for (let [k, c] of this._conversations) if (c === conv) this._conversations.delete(k);
-		// Les vues qui l'affichaient repartent sur une conversation neuve.
+		// Views of a removed conversation start a new conversation.
 		for (let rec of this._windows.values()) {
 			for (let p of Object.values(rec.panes)) {
 				if (p.inst.conv === conv && p.inst.ctx) {
@@ -591,7 +596,7 @@ var AnnotaChat = {
 		return conv && conv.itemID ? (Zotero.Items.get(conv.itemID) || null) : null;
 	},
 
-	// ---- Texte du document ----
+	// ---- Document text ----
 
 	cleanText(s) {
 		return String(s || "")
@@ -603,8 +608,8 @@ var AnnotaChat = {
 			.trim();
 	},
 
-	// Texte sans pages : découpé en blocs, pour n'envoyer que les plus
-	// pertinents quand il dépasse le budget.
+	// Split unpaged text into blocks so only relevant blocks enter
+	// a limited context budget.
 	chunk(text, size = 3000) {
 		let paras = this.cleanText(text).split(/\n{2,}/);
 		let out = [], cur = "";
@@ -613,7 +618,7 @@ var AnnotaChat = {
 				out.push(cur);
 				cur = "";
 			}
-			// Un paragraphe démesuré est coupé net.
+			// Split excessively long paragraphs at a hard limit.
 			while (p.length > size * 1.5) {
 				out.push(p.slice(0, size));
 				p = p.slice(size);
@@ -624,18 +629,18 @@ var AnnotaChat = {
 		return out.map((t, i) => ({ index: i, label: null, text: t }));
 	},
 
-	// Texte page par page. Ordre de préférence :
-	//   1. PDF ouvert : pdf.js donne chaque page ET son numéro imprimé, ce qui
-	//      permet de citer « p. 215 » comme la revue, et d'y naviguer ;
-	//   2. PDF fermé : extraction de Zotero (pages physiques, si séparées) ;
-	//   3. EPUB, page web : texte indexé, sans pages.
+	// Page extraction preference order:
+	// Open PDF: use pdf.js pages and visible printed page labels.
+	// supports citing and navigating to "p. 215", matching the journal;
+	// Closed PDF: use Zotero extraction and physical page boundaries if present.
+	// EPUB or web content: use indexed text without page guarantees.
 	async documentPages(att) {
 		if (!att) return { pages: [], paged: false };
 		let reader = Annota.findReaderFor(att.id);
 		let pdfDoc = reader ? Annota.getPDFDocument(reader) : null;
 		let cached = this._pageCache.get(att.id);
-		// Un texte lu sans le lecteur est relu dès que le PDF est ouvert : on y
-		// gagne les numéros de page imprimés.
+		// Re-read non-reader text once the PDF is opened to obtain page locations.
+		// This provides visible printed page labels.
 		if (cached && (cached.source === "reader" || !pdfDoc)) return cached;
 
 		let res = null;
@@ -658,7 +663,7 @@ var AnnotaChat = {
 			let n = Math.min(pdfDoc.numPages || 0, this.MAX_PAGES);
 			let labels = null;
 			try { labels = Annota._waive(await pdfDoc.getPageLabels()); }
-			catch (e) { /* pas de numérotation imprimée */ }
+			catch (e) { /* No printed page numbering is available. */ }
 			let pages = [];
 			for (let i = 0; i < n; i++) {
 				let page = Annota._waive(await pdfDoc.getPage(i + 1));
@@ -719,8 +724,8 @@ var AnnotaChat = {
 		return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 	},
 
-	// Mots porteurs de sens, en minuscules, accents conservés (la recherche
-	// de Zotero n'ignore pas les accents ; le score, lui, les ignore).
+	// Extract meaningful lowercase query words while retaining accents for
+	// Zotero search; scoring itself ignores accents.
 	terms(text) {
 		let words = String(text || "").toLowerCase()
 			.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu) || [];
@@ -741,9 +746,9 @@ var AnnotaChat = {
 		return n;
 	},
 
-	// Pages envoyées quand le document dépasse le budget : la première (titre,
-	// résumé, introduction situent le propos), puis les plus proches de la
-	// question. Sans mot porteur (« résume »), on garde le début, dans l'ordre.
+	// When a document exceeds the budget, include its first page for title,
+	// abstract and introduction, then pages most relevant to the question.
+	// Without meaningful query terms, retain the beginning in reading order.
 	selectPages(pages, terms, budget) {
 		let cost = p => p.text.length + 20;
 		let total = pages.reduce((s, p) => s + cost(p), 0);
@@ -769,8 +774,8 @@ var AnnotaChat = {
 			if (keep.has(pos)) continue;
 			let c = cost(pages[pos]);
 			if (used + c > budget) {
-				// Page pertinente plus longue que la place restante : son début
-				// vaut mieux que rien.
+				// If a relevant page exceeds the remaining budget, include its
+				// beginning rather than omit it entirely.
 				let room = budget - used - 20;
 				if (s > 0 && room > 1500) {
 					cut.set(pos, pages[pos].text.slice(0, room) + "…");
@@ -784,22 +789,22 @@ var AnnotaChat = {
 		}
 		let chosen = pages.filter((p, pos) => keep.has(pos))
 			.map(p => cut.has(pages.indexOf(p)) ? Object.assign({}, p, { text: cut.get(pages.indexOf(p)) }) : p);
-		// Une seule page plus grande que le budget : tronquée plutôt que rien.
+		// Truncate an oversized single page instead of returning no context.
 		if (!chosen.length && pages.length) {
 			chosen = [Object.assign({}, pages[0], { text: pages[0].text.slice(0, budget - 100) })];
 		}
 		return { chosen, omitted: pages.length - chosen.length };
 	},
 
-	// ---- Notes Zotero : lues avec leur clé, modifiées sur proposition ----
+	// Read Zotero notes by key and edit only through reviewed proposals.
 	//
-	// Le modèle reçoit chaque note entière, en Markdown, sous « [note CLÉ] ».
-	// Ce que le Markdown ne sait pas dire (citations, surlignages, images,
-	// liens, formules, tableaux) y devient un repère ⟦Z3 citation: …⟧ qui
-	// garde le HTML d'origine : recopié par le modèle, il est rendu tel quel.
-	// Le modèle ne modifie rien lui-même : il propose un bloc « zotero-note »
-	// (remplacer, compléter, créer), affiché en carte ; c'est le chercheur qui
-	// l'applique, et peut l'annuler.
+	// Supply each note as Markdown under a stable note-key label.
+	// Represent unsupported Markdown content, including citations, highlights,
+	// images, links, formulas and tables, with placeholders retaining original
+	// HTML. Reproduce the original HTML when a placeholder is returned.
+	// The model proposes zotero-note blocks for replacement, append or creation;
+	// the researcher applies a proposal explicitly.
+	// applies it and can undo it.
 
 	NOTE_RULES: [
 		"The researcher's Zotero notes are given in full, each under its key, such as"
@@ -822,8 +827,8 @@ var AnnotaChat = {
 			keys: {}, tokens: [] };
 	},
 
-	// Notes sous leur clé, dans la limite donnée. Une note qui n'y tient pas
-	// entière est marquée tronquée : on ne pourra que la compléter.
+	// Include keyed notes within the budget. Mark incomplete notes truncated,
+	// allowing append-only proposals rather than whole-note replacement.
 	notesBlock(notes, max, nctx) {
 		let out = [], used = 0;
 		for (let n of notes) {
@@ -861,7 +866,7 @@ var AnnotaChat = {
 			tokens.push(frag);
 			return "⟦Z" + tokens.length + (label ? " " + label.slice(0, 140) : "") + "⟧";
 		};
-		// Éléments propres à Zotero : gardés tels quels derrière un repère.
+		// Preserve Zotero-specific elements behind opaque placeholders.
 		let out = "", last = 0, m;
 		let open = /<span\b(?=[^>]*\bclass="(citation|highlight|underline|math)")[^>]*>/gi;
 		while ((m = open.exec(s)) !== null) {
@@ -877,7 +882,7 @@ var AnnotaChat = {
 			.replace(/<pre\b[^>]*\bclass="math"[^>]*>[\s\S]*?<\/pre>/gi, t => tok(t, "formula"))
 			.replace(/<img\b[^>]*>/gi, t => tok(t, "image"))
 			.replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, t => tok(t, "link: " + plain(t)));
-		// Mise en forme courante.
+		// Common formatting.
 		let inl = x => x
 			.replace(/<(strong|b)\b[^>]*>([\s\S]*?)<\/\1>/gi, "**$2**")
 			.replace(/<(em|i)\b[^>]*>([\s\S]*?)<\/\1>/gi, "*$2*")
@@ -897,7 +902,7 @@ var AnnotaChat = {
 		return s.replace(/\n{3,}/g, "\n\n").trim();
 	},
 
-	// Markdown proposé → HTML de note, repères rendus à leur HTML d'origine.
+	// Convert proposed Markdown to HTML and restore original placeholder HTML.
 	noteHTMLFromMarkdown(md, tokens, msg) {
 		let inline = x => this.inlineHTML(this.inlineTokens(x), msg);
 		let alone = /^\s*⟦Z(\d+)[^⟧]*⟧\s*$/;
@@ -936,7 +941,7 @@ var AnnotaChat = {
 		return { html, missing };
 	},
 
-	// Enveloppe d'une note Zotero (métadonnées des citations comprises).
+	// Zotero note envelope, including citation metadata.
 	noteWrapper(html) {
 		let m = String(html || "").match(/^\s*<div\b[^>]*\bdata-schema-version\b[^>]*>/i);
 		return m ? m[0] : "";
@@ -974,7 +979,7 @@ var AnnotaChat = {
 			Annota.t("c.np." + prop.action, { key: prop.key || "" }));
 		head.appendChild(title);
 		card.appendChild(head);
-		// Titre de la note visée, lu après coup (la note peut avoir changé).
+		// Read the target note's current title after generation; it may have changed.
 		if (prop.key) {
 			this.proposedNote(msg, prop).then(n => {
 				if (n) title.textContent = Annota.t("c.np." + prop.action,
@@ -1070,8 +1075,8 @@ var AnnotaChat = {
 		this.scheduleSave();
 	},
 
-	// Rétablit la note d'avant, si personne ne l'a modifiée depuis ; une
-	// note créée part à la corbeille.
+	// Restore the previous note only if no later edits conflict;
+	// newly created notes move to Trash on undo.
 	async undoNoteProposal(msg, index) {
 		let st = (msg.noteApplied || {})[index];
 		if (!st || !st.done) return;
@@ -1166,7 +1171,7 @@ var AnnotaChat = {
 
 	annotationsText(att, max) {
 		try {
-			let anns = (typeof att.getAnnotations === "function") ? att.getAnnotations() : [];
+			let anns = Annota.annotationChildren(att);
 			anns = anns.slice().sort((a, b) =>
 				String(a.annotationSortIndex).localeCompare(String(b.annotationSortIndex)));
 			let lines = anns.map(a => this.annotationLine(a)).filter(Boolean);
@@ -1223,8 +1228,8 @@ var AnnotaChat = {
 					+ " question were left out — say so if they may matter)" : "")
 				+ "\n" + body.join("\n\n"));
 
-			// Table numéro imprimé → page physique, pour naviguer depuis une
-			// citation. Inutile quand les deux coïncident.
+			// Map visible page labels to physical pages for citation navigation;
+			// no map is needed when the two numbering systems match.
 			if (paged && doc.pages.some(p => p.label !== String(p.index + 1))) {
 				pageMap = {};
 				for (let p of doc.pages) {
@@ -1280,8 +1285,8 @@ var AnnotaChat = {
 			let out = [];
 			for (let attID of top.getAttachments()) {
 				let att = Zotero.Items.get(attID);
-				if (!att || typeof att.getAnnotations !== "function") continue;
-				for (let a of att.getAnnotations()) {
+				if (!att?.isFileAttachment?.()) continue;
+				for (let a of Annota.annotationChildren(att)) {
 					let hay = this.fold((a.annotationText || "") + " " + (a.annotationComment || ""));
 					if (!folded.some(t => hay.includes(t))) continue;
 					let line = this.annotationLine(a);
@@ -1332,8 +1337,8 @@ var AnnotaChat = {
 			let block = "[" + n + "]\n" + (isNote ? "" : this.describeItem(h.item, Math.max(300, per - 700)));
 			let anns = isNote ? "" : this.matchingAnnotations(h.item, folded, 3);
 			if (anns) block += "\nThe researcher's annotations:\n" + anns;
-			// Notes : la note trouvée elle-même, ou celles de la référence qui
-			// parlent de la question, entières et avec leur clé.
+			// Include the selected note itself or relevant publication notes,
+			// whole and identified by stable note keys.
 			let notes = isNote ? [h.item]
 				: (withNotes && h.item.isRegularItem && h.item.isRegularItem()
 					? h.item.getNotes().map(id => Zotero.Items.get(id)).filter(nt => nt
@@ -1342,8 +1347,8 @@ var AnnotaChat = {
 			let txt = notes.length
 				? this.notesBlock(notes, Math.max(600, per - block.length), noteCtx) : "";
 			if (txt) block += (isNote ? "Standalone note:\n" : "\nThe researcher's notes on it:\n") + txt;
-			// Un bloc portant des notes n'est jamais recoupé : notesBlock a déjà
-			// tenu la limite, et une note présentée entière doit l'être.
+			// Never truncate a prepared note block again: notesBlock has already
+			// fit the budget, and a note described as complete must remain complete.
 			blocks.push(txt ? block : Annota.truncate(block, per));
 			sources.push({ n, id: h.item.id });
 		});
@@ -1382,9 +1387,9 @@ var AnnotaChat = {
 		return lines.join("\n");
 	},
 
-	// Tours précédents envoyés au modèle : les plus récents, dans une part
-	// du budget. Une question restée sans réponse (échec, arrêt) est écartée :
-	// deux messages « user » consécutifs embarrassent certaines API.
+	// Include recent conversation turns within a bounded part of context.
+	// Exclude unanswered failed/cancelled questions because consecutive
+	// user messages can confuse some provider APIs.
 	historyFor(conv, maxChars) {
 		let msgs = conv.messages.slice(0, -1);
 		let pairs = [];
@@ -1427,9 +1432,10 @@ var AnnotaChat = {
 	},
 
 	async answer(conv) {
+        if(Annota._workspaceInitializationError){conv.busy=false;conv.error={message:"Source-grounded Chat did not initialize. No legacy note-only fallback was used. "+Annota._workspaceInitializationError};this.refresh(conv);return;}
 		let p = this.provider();
 		let item = this.convItem(conv);
-		// Sans référence sélectionnée, seule la bibliothèque a un sens.
+		// Without a selected publication, use library scope.
 		if (!item) conv.scope = "library";
 		let question = conv.messages[conv.messages.length - 1].content;
 		conv.busy = true;
@@ -1440,8 +1446,8 @@ var AnnotaChat = {
 
 		try {
 			let budget = this.budget(p);
-			// Les mots de la question précédente comptent pour une relance
-			// (« et la seconde ? »), qui n'en a guère.
+			// Include preceding question terms for short follow-ups that introduce
+			// little searchable text of their own.
 			let users = conv.messages.filter(m => m.role === "user");
 			let terms = this.terms(question);
 			if (terms.length < 3 && users.length > 1) {
@@ -1506,7 +1512,7 @@ var AnnotaChat = {
 			conv.error = (e && e.cancelled) || (conv.cancel && conv.cancel.cancelled)
 				? { message: Annota.t("c.stopped"), stopped: true }
 				: { message: String((e && e.message) || e) };
-			log("discussion : " + conv.error.message);
+			log("Chat: " + conv.error.message);
 		}
 		finally {
 			conv.busy = false;
@@ -1521,7 +1527,7 @@ var AnnotaChat = {
 		if (conv && conv.cancel) conv.cancel.cancel();
 	},
 
-	// ---- Panneau ----
+	// ---- Panel ----
 
 	el(doc, tag, cls, text) {
 		let e = doc.createElementNS(this.HTML_NS, tag);
@@ -1530,8 +1536,8 @@ var AnnotaChat = {
 		return e;
 	},
 
-	// Icônes au trait (16 px), dessinées en currentColor : elles suivent le
-	// thème clair ou sombre de Zotero.
+	// Draw sixteen-pixel icons in currentColor so they follow
+	// Zotero light and dark themes.
 	ICONS: {
 		close: ["M4 4l8 8", "M12 4l-8 8"],
 		plus: ["M8 3v10", "M3 8h10"],
@@ -1617,7 +1623,7 @@ var AnnotaChat = {
 		this.ensureStyles(doc);
 		let root = this.el(doc, "div", "annota-chat");
 
-		// En-tête : fermer et nouvelle discussion à gauche, actions à droite.
+		// Header: close/new conversation on the left; secondary actions on the right.
 		let header = this.el(doc, "div", "annota-chat-header");
 		let left = this.el(doc, "div", "annota-chat-header-group");
 		let right = this.el(doc, "div", "annota-chat-header-group");
@@ -1627,8 +1633,8 @@ var AnnotaChat = {
 		let newBtn = this.iconButton(doc, "plus", Annota.t("c.new"), () => {
 			let conv = this.conversationOf(inst);
 			if (!conv || conv.busy || !inst.ctx) return;
-			// L'ancienne reste dans l'historique ; la nouvelle devient celle
-			// de cette référence.
+			// Keep the old conversation in history while the new one becomes
+			// active for this publication context.
 			let fresh = this.newConversation(inst.ctx, inst.key);
 			fresh.scope = conv.scope;
 			this._conversations.set(inst.key, fresh);
@@ -1644,12 +1650,12 @@ var AnnotaChat = {
 			inst.spell = null;
 			if (!this._history) {
 				this.loadHistory().then(() => this.renderInstance(inst))
-					.catch(e => log("historique : " + e));
+					.catch(e => log("History: " + e));
 			}
 			this.renderInstance(inst);
 		});
 		left.appendChild(histBtn);
-		let title = this.el(doc, "div", "annota-chat-title", "Annota");
+		let title = this.el(doc, "div", "annota-chat-title", "ResearchAnnotator");
 		let saveBtn = this.iconButton(doc, "note", Annota.t("c.savechat"), () => {
 			let conv = this.conversationOf(inst);
 			if (conv && conv.messages.length) {
@@ -1662,16 +1668,16 @@ var AnnotaChat = {
 		header.appendChild(title);
 		header.appendChild(right);
 
-		// Fil de la discussion.
+		// Conversation thread.
 		let scroller = this.el(doc, "div", "annota-chat-scroll");
 		let thread = this.el(doc, "div", "annota-chat-thread");
 		scroller.appendChild(thread);
-		// Focalisable : un clic dans la discussion lui donne le focus. Sans
-		// cela, le focus restait au lecteur PDF et ⌘C (ou Édition > Copier)
-		// copiait la sélection du lecteur, vide, au lieu de celle d'ici.
+		// Make the conversation focusable. Otherwise copying selected Chat
+		// text can leave focus in the PDF reader and copy its empty selection
+		// instead of the selected answer text.
 		scroller.setAttribute("tabindex", "-1");
 
-		// Zone de saisie : une carte, comme celle de Beaver.
+		// Use a compact card-style question composer.
 		let dock = this.el(doc, "div", "annota-chat-dock");
 		let card = this.el(doc, "div", "annota-composer");
 		let chips = this.el(doc, "div", "annota-composer-chips");
@@ -1683,7 +1689,7 @@ var AnnotaChat = {
 		libChip.appendChild(this.icon(doc, "library", 13));
 		let libLabel = this.el(doc, "span", "annota-chip-label", Annota.t("c.lib"));
 		libChip.appendChild(libLabel);
-		// Collections où chercher, dans la portée « bibliothèque ».
+		// Collection selection for library scope.
 		let colChip = this.button(doc, null, "annota-chip", () => this.openCollectionMenu(inst));
 		colChip.appendChild(this.icon(doc, "folder", 13));
 		let colLabel = this.el(doc, "span", "annota-chip-label", Annota.t("c.col.all"));
@@ -1723,8 +1729,8 @@ var AnnotaChat = {
 			docChip, docLabel, libChip, libLabel, colChip, colLabel, newBtn, saveBtn, histBtn, dock,
 			key: null, ctx: null, conv: null, historyOpen: false, historyQuery: "" };
 
-		// Le lecteur et la fenêtre principale ont leurs raccourcis : la frappe
-		// s'arrête au panneau (sauf le raccourci qui le ferme).
+		// Stop reader/main-window shortcuts at Chat controls, except for
+		// the shortcut that closes the sidebar itself.
 		for (let type of ["keydown", "keypress", "keyup"]) {
 			root.addEventListener(type, (e) => {
 				let accel = Zotero.isMac ? e.metaKey : e.ctrlKey;
@@ -1735,15 +1741,15 @@ var AnnotaChat = {
 				e.stopPropagation();
 			});
 		}
-		// ⌘C sur du texte sélectionné dans la discussion : copié à coup sûr,
-		// texte et mise en forme, quel que soit le cheminement du raccourci.
+		// Copy selected Chat text and formatting reliably regardless of
+		// which shortcut route reaches the control.
 		root.addEventListener("keydown", (e) => {
 			let accel = Zotero.isMac ? e.metaKey : e.ctrlKey;
 			if (!accel || e.shiftKey || e.altKey || String(e.key).toLowerCase() !== "c") return;
 			if (e.target === input) return;
 			if (this.copySelection(inst)) e.preventDefault();
 		}, true);
-		// Clic droit sur une sélection : « Copier ».
+		// Right-click selected text to expose Copy.
 		scroller.addEventListener("contextmenu", (e) => {
 			if (!this.selectionIn(inst)) return;
 			e.preventDefault();
@@ -1761,7 +1767,7 @@ var AnnotaChat = {
 			this.updateSend(inst);
 		});
 		modelSel.addEventListener("change", () => {
-			Zotero.Prefs.set("annota.chatProvider", modelSel.value || "");
+			Zotero.Prefs.set("researchannotator.chatProvider", modelSel.value || "");
 			for (let rec of this._windows.values()) {
 				for (let p of Object.values(rec.panes)) this.fillModels(p.inst);
 			}
@@ -1771,7 +1777,7 @@ var AnnotaChat = {
 		return inst;
 	},
 
-	// Texte sélectionné dans les messages de la discussion, ou "".
+	// Selected conversation text, or an empty string.
 	selectionIn(inst) {
 		try {
 			let sel = inst.win.getSelection();
@@ -1785,8 +1791,8 @@ var AnnotaChat = {
 		}
 	},
 
-	// Copie la sélection : la commande native d'abord (texte et mise en
-	// forme), le texte seul à défaut.
+	// Copy with the native command first to retain formatting;
+	// fallback to plain text if necessary.
 	copySelection(inst) {
 		let text = this.selectionIn(inst);
 		if (!text) return false;
@@ -1797,9 +1803,9 @@ var AnnotaChat = {
 				return true;
 			}
 		}
-		catch (e) { log("copie : " + e); }
+		catch (e) { log("Copy: " + e); }
 		try { Zotero.Utilities.Internal.copyTextToClipboard(text); }
-		catch (e) { log("copie : " + e); return false; }
+		catch (e) { log("Copy: " + e); return false; }
 		return true;
 	},
 
@@ -1840,12 +1846,12 @@ var AnnotaChat = {
 		inst.send.disabled = !busy && !inst.input.value.trim();
 	},
 
-	// ---- Collections où chercher ----
+	// Choose collections to search.
 	//
-	// La portée « bibliothèque » peut se limiter à des collections choisies,
-	// avec ou sans leurs sous-collections. Le choix suit la conversation ; le
-	// dernier fait sert aux nouvelles conversations de la même bibliothèque
-	// (préférence chatCollections : { libraryID: { keys, sub } }).
+	// Library scope can be restricted to selected collections, optionally
+	// including subcollections. Retain this choice per conversation,
+	// and use the latest choice as the default for new conversations
+	// in the same library through chatCollections.
 
 	collectionPrefs() {
 		try { return JSON.parse(String(getPref("chatCollections", "") || "{}")) || {}; }
@@ -1860,7 +1866,7 @@ var AnnotaChat = {
 	saveCollectionDefault(conv) {
 		let all = this.collectionPrefs();
 		all[String(conv.libraryID)] = { keys: conv.collections || [], sub: conv.subcollections !== false };
-		try { Zotero.Prefs.set("annota.chatCollections", JSON.stringify(all)); }
+		try { Zotero.Prefs.set("researchannotator.chatCollections", JSON.stringify(all)); }
 		catch (e) { log("collections : " + e); }
 	},
 
@@ -1882,7 +1888,7 @@ var AnnotaChat = {
 		return cols.length > 1 ? first + " +" + (cols.length - 1) : first;
 	},
 
-	// Identifiants des éléments des collections (et de leurs sous-collections).
+	// Collect item IDs from selected collections and optional descendants.
 	itemsInCollections(cols, sub) {
 		let ids = new Set();
 		let walk = (c) => {
@@ -1896,7 +1902,7 @@ var AnnotaChat = {
 		return ids;
 	},
 
-	// Arbre des collections : [{ collection, depth }], dans l'ordre de Zotero.
+	// Collection tree rows contain collection and depth in native order.
 	collectionTree(libraryID) {
 		let out = [];
 		let byName = (a, b) => Zotero.localeCompare(a.name, b.name);
@@ -1995,8 +2001,8 @@ var AnnotaChat = {
 		inst.input.focus();
 	},
 
-	// Menu des IA : celles déjà réglées dans l'onglet ✨ AI, avec le modèle
-	// que la discussion emploiera.
+	// The model menu lists providers configured in the existing AI tab.
+	// that Chat will use.
 	fillModels(inst) {
 		let sel = inst.modelSel;
 		let stored = String(getPref("chatProvider", "") || "").trim();
@@ -2077,8 +2083,8 @@ var AnnotaChat = {
 		inst.saveBtn.disabled = !conv.messages.length;
 	},
 
-	// Toutes les vues ouvertes sur cette conversation (bibliothèque et lecteur
-	// peuvent montrer la même référence).
+	// All views displaying this conversation, including reader and
+	// library views of the same publication.
 	refresh(conv) {
 		if (!conv) return;
 		for (let rec of this._windows.values()) {
@@ -2096,7 +2102,7 @@ var AnnotaChat = {
 		box.textContent = "";
 		inst.histBtn.setAttribute("aria-pressed", inst.historyOpen ? "true" : "false");
 		inst.dock.hidden = !!(inst.historyOpen || inst.spell);
-		// Vue « Correction » (spell.js) : prioritaire tant qu'elle est ouverte.
+		// The spell.js correction view takes priority while open.
 		if (inst.spell && AnnotaSpell) {
 			inst.root.setAttribute("data-empty", "false");
 			box.appendChild(AnnotaSpell.render(inst));
@@ -2143,8 +2149,8 @@ var AnnotaChat = {
 		inst.scroller.scrollTop = inst.scroller.scrollHeight;
 	},
 
-	// [libellé, question] ; une question qui finit par une espace attend la
-	// fin de la phrase plutôt que d'être envoyée.
+	// Suggestions contain a label and question; a trailing space means
+	// the user should finish typing rather than immediately submit.
 	SUGGESTIONS: {
 		document: ["sum", "arg", "meth", "lim", "ann"],
 		library: ["what", "cmp", "find"]
@@ -2259,8 +2265,8 @@ var AnnotaChat = {
 
 		let open = () => {
 			inst.conv = c;
-			// La conversation appartient peut-être à une autre référence : elle
-			// reste affichée tant que la sélection ne change pas.
+			// A displayed conversation can belong to another publication;
+			// retain it until the selected context actually changes.
 			inst.historyOpen = false;
 			this.renderInstance(inst);
 			this.updateChips(inst);
@@ -2286,7 +2292,7 @@ var AnnotaChat = {
 		let actions = this.el(doc, "div", "annota-home-actions");
 		for (let [label, prompt] of this.suggestions(conv.scope)) {
 			actions.appendChild(this.button(doc, label, "annota-launch", () => {
-				// Une suggestion ouverte (« … about ») attend la fin de la phrase.
+				// An open-ended suggestion waits for the user to complete it.
 				if (/\s$/.test(prompt)) {
 					inst.input.value = prompt;
 					this.autoGrow(inst);
@@ -2338,8 +2344,8 @@ var AnnotaChat = {
 		return wrap;
 	},
 
-	// ---- Markdown → DOM (jamais innerHTML : la réponse vient d'un modèle et
-	// le panneau vit dans une fenêtre privilégiée) ----
+	// Render Markdown to DOM without innerHTML: model text is untrusted
+	// and the Chat document has extension privileges.
 
 	mdBlocks(text) {
 		let lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
@@ -2426,8 +2432,8 @@ var AnnotaChat = {
 		return out;
 	},
 
-	// « [p. 12–13, 15] » → préfixe, puis morceaux : séparateurs et numéros.
-	// Le premier numéro d'un intervalle sert de cible.
+	// Split page citation groups into prefix, separators and page numbers.
+	// Navigate ranges using their first page number.
 	splitCitation(v, isPage) {
 		let inner = v.slice(1, -1);
 		let prefix = "";
@@ -2472,8 +2478,8 @@ var AnnotaChat = {
 		catch (e) { log("selectItem: " + e); }
 	},
 
-	// Pastille de citation : verte pour une page (elle ouvre le PDF à cet
-	// endroit), grise pour une référence de la bibliothèque.
+	// Page citations open the PDF at that page; library citations
+	// select the corresponding bibliographic item.
 	pill(doc, text, title, kind, onClick) {
 		let a = this.el(doc, "span", "annota-cite annota-cite-" + kind, text);
 		a.setAttribute("role", "link");
@@ -2570,7 +2576,7 @@ var AnnotaChat = {
 		return root;
 	},
 
-	// ---- Markdown → HTML de note (texte échappé, liens zotero://) ----
+	// Render note HTML from escaped text and validated Zotero links.
 
 	esc(s) {
 		return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -2655,7 +2661,7 @@ var AnnotaChat = {
 		let libraryID = top ? top.libraryID : conv.libraryID;
 		let lib = Zotero.Libraries.get(libraryID);
 		if (lib && lib.editable === false) {
-			toast("Annota", Annota.t("c.ro"), "error");
+			toast("ResearchAnnotator", Annota.t("c.ro"), "error");
 			return;
 		}
 		let title = top && top.getDisplayTitle ? top.getDisplayTitle() : "";
@@ -2668,7 +2674,7 @@ var AnnotaChat = {
 			else {
 				html.push(this.markdownHTML(m.content, m));
 				let meta = [this.PROVIDER_LABELS[m.provider], m.model].filter(Boolean).join(" · ");
-				if (meta) html.push("<p><em>" + this.esc("Annota · " + meta) + "</em></p>");
+				if (meta) html.push("<p><em>" + this.esc("ResearchAnnotator · " + meta) + "</em></p>");
 			}
 		}
 		let note = new Zotero.Item("note");
@@ -2676,10 +2682,10 @@ var AnnotaChat = {
 		if (top && top.isRegularItem && top.isRegularItem()) note.parentID = top.id;
 		note.setNote(html.join("\n"));
 		await note.saveTx();
-		toast("Annota", Annota.t(note.parentID ? "c.saved.child" : "c.saved.alone"));
+		toast("ResearchAnnotator", Annota.t(note.parentID ? "c.saved.child" : "c.saved.alone"));
 	},
 
-	// ---- Citations depuis le lecteur ----
+	// Add citations from the reader.
 
 	quoteText(text, pageLabel) {
 		let t = String(text || "").replace(/\s+/g, " ").trim();
@@ -2687,7 +2693,7 @@ var AnnotaChat = {
 		return "> " + t + (pageLabel ? " [p. " + pageLabel + "]" : "") + "\n\n";
 	},
 
-	// Ouvre le panneau et dépose la citation dans la zone de saisie.
+	// Open Chat and insert the quoted passage into the composer.
 	addQuote(attachmentID, quote) {
 		if (!quote) return;
 		let win = Zotero.getMainWindow();
@@ -2723,7 +2729,7 @@ var AnnotaChat = {
 		catch (e) {}
 	},
 
-	// Bouton du popup de sélection du lecteur.
+	// Reader selection-popup action.
 	renderAskButton({ reader, doc, params, append }) {
 		if (!getPref("chatSelectionButton", true) || !reader || !doc || !append) return;
 		let ann = params && params.annotation;
@@ -2737,7 +2743,7 @@ var AnnotaChat = {
 		btn.textContent = Annota.t("c.ask");
 		btn.title = Annota.t("c.ask.title");
 		btn.style.cssText = "width:100%;box-sizing:border-box;margin-top:4px;"
-			+ "padding:3px 6px;font:inherit;font-size:11.5px;cursor:pointer;"
+			+ "padding:3px 6px;font:inherit;font-size:11.5px;cursor:pointer;text-align:center;"
 			+ "border:1px solid rgba(128,128,128,.45);border-radius:4px;"
 			+ "background:rgba(128,128,128,.12);color:inherit;";
 		btn.addEventListener("click", (e) => {
@@ -2748,7 +2754,7 @@ var AnnotaChat = {
 		append(btn);
 	},
 
-	// Entrée du menu contextuel des annotations du lecteur.
+	// Reader annotation context-menu action.
 	async quoteAnnotations(reader, keys) {
 		let att = await Zotero.Items.getAsync(reader.itemID);
 		if (!att) return;
@@ -2766,9 +2772,9 @@ var AnnotaChat = {
 
 	// ---- Styles ----
 	//
-	// Couleurs tirées du thème de Zotero (--material-*, --fill-*, --accent-*) :
-	// le panneau suit les thèmes clair, sombre et contraste élevé, comme
-	// Beaver qui s'appuie sur les mêmes jetons.
+	// Use Zotero theme variables such as --material-*, --fill-* and --accent-*.
+	// These let the panel follow light, dark and high-contrast themes
+	// without a separate external visual framework.
 
 	ensureStyles(doc) {
 		if (!doc || doc.getElementById("annota-chat-style")) return;
@@ -2906,8 +2912,7 @@ var AnnotaChat = {
   border: none; outline: none; background: transparent; color: inherit;
   font: inherit; font-size: 13px; line-height: 1.45; }
 .annota-composer-input::placeholder { color: var(--fill-tertiary); }
-/* Zotero entoure tout champ focalisé d'un anneau bleu (contour et ombre) ;
-   dans la carte de saisie, c'est la carte elle-même qui signale le focus. */
+/* Zotero normally adds focus outlines and shadows to controls; the composer card owns its focus indicator. */
 .annota-chat .annota-composer-input,
 .annota-chat .annota-composer-input:focus,
 .annota-chat .annota-composer-input:focus-visible,
@@ -2982,7 +2987,7 @@ var AnnotaChat = {
 .annota-launch:hover { background: var(--fill-quinary); }
 .annota-home-hint { margin-top: 12px; font-size: 11px; color: var(--fill-tertiary, rgba(128,128,128,.8)); }
 `;
-		// Vue de correction : ses règles vivent avec elle, dans spell.js.
+		// Spell correction view styles live with that view in spell.js.
 		if (typeof AnnotaSpell !== "undefined" && AnnotaSpell && AnnotaSpell.CSS) {
 			st.textContent += AnnotaSpell.CSS;
 		}

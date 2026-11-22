@@ -1,0 +1,651 @@
+# Historical Annota user guide
+
+Preserved upstream-era documentation and attribution. It is not the current ResearchAnnotator contract. In particular, historical native-Comment generation and release commands below must not be used as current workflow instructions. See README.md and REFINEMENT_AUDIT.md.
+
+# Annota (Zotero 7 → 10)
+
+Current development work adds a Research Knowledge Network inside Research Workspace: explicit evidence relationships, derived topics, research questions, an optional local graph and human-reviewed AI suggestions. Existing annotation, notes, Review, Chat and Automatic/Manual AI behavior remain. See [RESEARCH_KNOWLEDGE_NETWORK.md](RESEARCH_KNOWLEDGE_NETWORK.md) for workflows, limits and validation.
+
+## Current development candidate: unified workspace
+
+Open **Tools → Research Workspace…** or its toolbar button for Explorer, Notes,
+Saved Searches and Activity. Adjacent Annotation Review and Research Chat buttons
+keep those existing tools independently accessible. Notes retain user-authored
+blocks with their neighboring highlights during updates. See
+[RESEARCH_WORKSPACE.md](RESEARCH_WORKSPACE.md) for behavior, native smoke evidence
+and remaining live checks. Broad rebranding and final icon polish remain deferred.
+
+## Current development candidate: Explorer and managed-note repair
+
+Use **Tools → Research Explorer…** for local annotation search, filters, saved
+searches, guarded edits and filtered note generation. See
+[RESEARCH_EXPLORER.md](RESEARCH_EXPLORER.md). For the recursive managed-note snapshot
+regression, open **Tools → Research Notes… → Repair duplicated snapshots…**. It
+backs up the exact original before conservative repair; a restore action is included.
+Read [MANAGED_NOTE_REPAIR.md](MANAGED_NOTE_REPAIR.md) before repairing affected notes.
+Native Zotero acceptance is still required; complete rebranding remains deferred.
+
+## Research Notes development candidate
+
+Open **Tools → Research Notes…** to preview and generate scoped PDF notes or
+cross-publication notes by structured field/semantic color, manage saved notes and
+view background jobs. AI generation is an explicit dashboard choice; preview makes
+no requests. See [RESEARCH_NOTE_GENERATION.md](RESEARCH_NOTE_GENERATION.md) for the
+current candidate and [TESTING.md](TESTING.md) for required Zotero acceptance.
+The inherited documentation below remains historical where superseded by current
+requirements. Complete rebranding stays deferred to final Production Readiness.
+
+> 🤖 **Written by vibe coding with Claude.** This plugin was designed and
+> written in conversation with Claude (Anthropic), from the real needs of a
+> doctoral student. I am not a developer. I describe what I need, I test, I
+> correct, and the code takes shape through the exchange. I say this up front,
+> out of honesty, so you know what you are installing.
+
+**Annota automates a prompt on every highlight: the text you highlight in the
+PDF reader is sent to an LLM, and the response becomes the annotation's
+comment** — on the fly, as soon as the highlight is created.
+
+![Annota in the Zotero reader: selecting a passage opens a form named after the
+highlight colour, you fill in the fields you want, click that colour, and the
+structured comment appears in the annotation](demo.gif)
+
+*Select a passage, and the fields of the colour you are about to click appear —
+here “Definition”, on blue. Fill in what you want, leave the rest to the model,
+click the colour: the comment is written for you.*
+
+📥 **Downstream, [Ariane](https://github.com/Liotou/obsidian-ariane) picks up
+what Annota writes.** It is my Obsidian plugin: it turns Zotero annotations
+into atomised, linked, citable notes, and the title/paraphrase/references shape
+that Annota's academic prompt produces is exactly what Ariane expects to name
+those notes. Annota stays entirely optional and useful on its own — Ariane is
+just what happens next if you use both.
+
+**You assign a prompt to each highlight color**, so a color can summarize,
+another critique, another translate — and a color with no prompt is simply left
+alone. Nothing is configured out of the box: Annota stays inert until you give
+at least one color a prompt.
+
+Ready-made prompts are collected in
+[PROMPT-EXAMPLES.txt](PROMPT-EXAMPLES.txt), and Annota works with Mistral
+(default) or any OpenAI-compatible endpoint.
+
+💬 **Annota also lets you chat with what you read** — the open PDF or your
+whole library — in a side panel, with the AI you already set up
+(remote API, Ollama, Claude Code CLI or Apple Intelligence). Answers cite pages
+and references, and a click takes you there. See
+[Chat with your documents](#-chat-with-your-documents).
+
+## 🧭 Table of contents
+
+- [🧪 Example output](#-example-output-from-the-academic-prompt-in-prompt-examplestxt)
+- [📦 Installation](#-installation)
+- [⚙️ Configuration](#-configuration)
+- [🖱️ Running a prompt on one annotation](#-running-a-prompt-on-one-annotation)
+- [⏳ Generating comments after the fact](#-generating-comments-after-the-fact)
+- [💬 Chat with your documents](#-chat-with-your-documents)
+- [🔗 From a note's citation back to the highlight](#-from-a-notes-citation-back-to-the-highlight)
+- [🔧 How it works](#-how-it-works)
+- [🔒 Security](#-security)
+- [🧑‍💻 Development](#-development)
+- [🙏 Thanks](#-thanks)
+- [☕ Buy me a coffee](#-buy-me-a-coffee)
+- [⚖️ Licence](#-licence)
+
+---
+
+### 🧪 Example output (from the academic prompt in PROMPT-EXAMPLES.txt)
+
+```
+<b>Title.</b>
+Concise paraphrase (2 to 5 sentences, ~80 words max).
+<i>(Author, year, p.XX ; Author2, year)</i>
+```
+
+The third line (references) appears only if the passage explicitly cites
+sources; a page number present in the passage ("Moulin, 1999, p.93") is kept
+as-is. That behaviour comes from the prompt, not from Annota — write your own
+and you get something else entirely.
+
+## 📦 Installation
+
+1. Build the package:
+   ```bash
+   ./build.sh
+   ```
+   (or zip `manifest.json`, `bootstrap.js`, `chat.js`, `chat.svg`,
+   `prefs.js`, `preferences.xhtml`, `preferences.js`, `preferences.css` and the
+   icons at the root of a `.zip`, then rename it to `.xpi`).
+2. In Zotero → **Tools → Add-ons** → gear ⚙️ →
+   **Install Add-on From File…** → select `annota.xpi`.
+3. Restart Zotero if prompted.
+
+You can also download the `.xpi` directly from the
+[Releases](../../releases) page.
+
+### 🔄 Automatic updates
+
+Annota checks GitHub for new versions and updates itself — no manual
+reinstall. Zotero polls periodically; you can also force a check via
+**Tools → Add-ons → gear ⚙️ → Check for Updates**.
+
+## ⚙️ Configuration
+
+**Add-ons → Annota**, or **Preferences → Annota**. The panel has four tabs:
+**🎨 Colors** (what each highlight color does — the only tab you need for a
+manual setup), **✨ AI** (provider and what gets sent, used only by colors that
+call the model), **💬 Chat** (the chat panel's provider, model and context) and
+**⚙️ General** (behaviour). The panel adapts to the window: fields sit next to
+their label when there is room and stack under it when the window is narrow,
+and the tabs stay at the top while you scroll. It reopens on the tab you used
+last. **General → Interface → Language** switches the whole interface (settings,
+chat, menus, messages) between English and French; *Automatic* follows Zotero. Reference material — field types,
+the variable list, advanced paths — sits in collapsible blocks so the everyday
+view stays short.
+
+### 🎛️ General
+There is no global on/off switch: each color decides whether it runs
+automatically or only on request (see **Prompt**), and a color with no prompt is
+never touched. To stop all automatic generation, set your colors to *Only on
+request*.
+
+- **Also process underlines** — by default only highlights (`highlight`) trigger
+  generation; this adds `underline`.
+- **Overwrite an existing comment** — off by default (already-commented
+  annotations are never touched).
+- **⏳ while generating** — shows an indicator during the network call.
+
+### 🩹 When generation fails
+A failed call used to leave a highlight with no comment — indistinguishable from
+one you left bare on purpose, and only noticed on re-reading.
+
+- **Retries** — a dropped connection or a model that stumbles gets another go
+  (default 1 extra attempt). A refused key or a missing model is *not* retried:
+  the HTTP status says the answer will be the same.
+- **Tag failures** — what still fails is tagged `annota-failed` on the
+  annotation: visible in the reader, searchable in the library. A later success
+  removes the tag in the same write.
+- **Retry failed comments** — the right-click Annota submenu gains an entry that
+  targets only the tagged annotations, whatever their comment. Use it to catch up
+  after your provider was down, without regenerating everything.
+
+Set the tag name, the retry count, or turn marking off entirely in the settings.
+
+### 🔤 Markdown
+Models write `**bold**` and `*italic*` whatever the prompt says, and a Zotero
+comment renders neither — the asterisks show up as-is. Annota converts them to
+`<b>` and `<i>`, strips heading marks and code fences, and turns list dashes into
+bullets. Real asterisks (`3 * 4`) and `snake_case` names are left alone.
+
+A field value the model wraps entirely in emphasis is **undressed**: formatting
+belongs to the field's declared format, not to the answer, so a `bold` field
+never comes back as `<b><b>…</b></b>`.
+
+### 🧩 Structured output
+When the provider supports it (Mistral / OpenAI-compatible and Ollama), the
+field-filling request asks for a **JSON object** — `response_format:
+{"type": "json_object"}` — instead of `name: value` lines. Small local models
+are the ones that stumble on free-form formats; this removes the guesswork.
+
+The reply is not trusted blindly: if it isn't usable JSON, Annota falls back to
+the `name: value` reader rather than losing the answer. The Claude CLI and Apple
+Intelligence have no equivalent and keep the text path.
+
+### 🤖 AI provider
+Pick one in the dropdown; only that provider's settings are shown.
+
+| Provider | What it is |
+|---|---|
+| **Mistral / OpenAI-compatible** | Any remote `chat/completions` endpoint. Needs an API key (console.mistral.ai). |
+| **Ollama (local)** | A model running on your own machine — no API key, no per-token cost, nothing leaves the computer. The model dropdown is read from your running Ollama (hit **Refresh** after `ollama pull …`). **Tags matter**: `llama3.1:8b` and `llama3.1` are different names, and only what is installed will answer. The first call after startup is slow while the model loads. |
+| **Apple Intelligence (on-device)** | The model built into macOS 26+ — no API key, no cost, nothing leaves the Mac, ~1 s per call. Needs Apple Intelligence enabled and the Xcode Command Line Tools (`xcode-select --install`): Annota compiles a small Swift helper once on first use, since Apple exposes this model to native code only. |
+| **Claude Code CLI (local)** | Runs `claude -p` using whatever your `claude` command is logged into (your subscription). **Detect** finds the program (Zotero doesn't see your shell PATH) and reads what your version offers: pick the **model** (`opus`, `sonnet`, `haiku`… or a full model name) and the **effort** level (low → max; higher thinks longer, slower and uses more of your plan). The chat can use its own model and effort. A few seconds of cold start per call. |
+
+**Temperature** (0–2, lower = steadier) applies to the two HTTP providers; the
+Claude CLI ignores it.
+
+### 💬 Text generation
+- **Output language** — available in the prompt via `{{language}}`.
+- **Max length** — available via `{{maxWords}}`.
+
+### 🧾 Document context
+- **Send document context to the AI** — when enabled (default), the title,
+  authors, year, publication, page and **abstract** of the source reference are
+  sent along with the highlighted text. This helps the model situate the
+  passage and resolve acronyms or ambiguous references. Empty fields are
+  omitted.
+- **Max abstract length** — abstracts are truncated to limit token usage
+  (default 1200 characters; set 0 for no truncation).
+- **Look up citations found in the passage** — when the highlighted text cites
+  sources (`[1]`, `[2]`, `(Author, year)`, `Author (year)`), Annota resolves them
+  to the actual bibliographic entries and passes them to the AI as
+  `{{references}}`, so the model can name who is being cited instead of guessing.
+  **Max references sent** caps how many entries go with each call (default 8).
+
+  Two strategies, tried in order:
+  1. **PDF links (reliable)** — the same mechanism behind Zotero's hover popup:
+     the citation marker is a `/Link` annotation whose destination points at the
+     bibliography entry, so Annota follows the link instead of guessing. Requires
+     the PDF to be **open in a reader tab** (it is when you highlight) and the
+     publisher to have embedded those links.
+  2. **Text fallback** — if there is no link (or the PDF isn't open, e.g. bulk
+     right-click from the library), Annota detects the citation markers and looks
+     them up in the article's reference list extracted from the PDF text.
+
+  If neither resolves, nothing is sent and the rest works exactly as before.
+
+  **EPUB books: footnotes.** Many books cite their sources in footnotes: the
+  passage only carries a superscript number (`…en tout cas bref⁹.`) linked to
+  the note, which names the author, the work, the year and the page. On an
+  EPUB, Annota opens the book file itself, finds the highlighted passage in its
+  chapter, follows every footnote link inside it (or glued right after it, if
+  your selection stopped on the word or the full stop) and sends each note as
+  `[note 9] …` in `{{references}}`. Index entries and page cross-references
+  are recognised and left out. A note reading *Ibid.*, *Id.* or *op. cit.* is
+  sent together with the earlier note that names the source. Many books mix
+  references and remarks in their notes: a note that cites no work (no year,
+  no author in bibliographic form, e.g. *"I come back to this later, cf.
+  infra"*, a translator's note) is not sent at all. And should the model still
+  answer with the book you are reading as the source (its own author and
+  year), that citation is removed from the field. No reader tab is
+  needed, so it also works from the library's right-click menu.
+
+  To have the reference field filled from footnotes, tell your prompt that a
+  number glued to a word is a citation, e.g.:
+
+  > Third form: a footnote call, a number glued to a word or a full stop
+  > ("bref9.") that calls the note given as "[note 9]" in the works cited.
+  > Take the author and the year from that note; its page ("p. 164") is the
+  > cited page. If the note says *Ibid.* or *op. cit.*, use the earlier note
+  > given right after it. Ignore a note that cites no work.
+
+### 🎨 Prompt
+Above the prompt box is a row of **color swatches** — the same colors you use to
+highlight in the reader, read straight from Zotero's own palette. Click one to
+write that color's prompt.
+
+- **A color with no prompt is never processed.** That is how you keep Annota off
+  certain colors — leave them empty.
+- A **green dot** marks the colors that are active.
+- **Clear this color's prompt** switches a color back off.
+- Everything is empty on a fresh install, so nothing happens until you set up at
+  least one color. Copyable examples live in
+  [PROMPT-EXAMPLES.txt](PROMPT-EXAMPLES.txt).
+
+#### Custom fields — what you fill in by hand
+
+Each color can define **fields you fill in yourself**. They appear **in the
+text-selection popup** — the little window that shows up when you select text,
+*before* the annotation exists. You type the values, then validate by picking a
+highlight color as usual; the annotation is created with those values already
+applied. Each field becomes a variable usable in the prompt *and* in the layout.
+
+**The prompt is bound to the fields.** Once a color declares fields, its prompt
+no longer writes a free-form comment: the model is asked to fill **the fields you
+declared, and only those** — one `name: value` line per field. Which means:
+
+- What you typed by hand is **never rewritten**. It is handed to the model as
+  context, and the model fills only what you left empty.
+- Fill the whole form and **no request is sent at all** — no API key, no
+  provider needed.
+- Leave the form empty (or don't open it) and the AI fills every field. That is
+  the *automatic* flow: highlight, and the structured comment appears.
+- The answer is parsed back field by field, so each value keeps **its own
+  formatting** (bold title, plain paraphrase, italic reference).
+
+A field of type `ai` keeps its own separate instruction. Put `{{ai}}` in the
+layout and you get the old behaviour instead: one free-form answer for the whole
+comment.
+
+**A visual editor** builds them: one row per field with its label, its type
+(short text, long text, checkbox, choice list, written by the AI) and its
+format in the comment (plain, **B**, *I*, ***BI***, U). Reorder with the
+arrows, start from a ready-made set (title · paraphrase · reference,
+concept · definition…), and watch the **comment preview** update as you go.
+The variable name (`{{paraphrase}}`) follows the label until you change it.
+
+Prefer typing? **Edit as text** switches to the underlying syntax — what the
+editor writes, and what older versions stored, so nothing changes for existing
+settings. A color whose text the editor can't show (a `#` comment, a field
+named after a built-in variable) stays in text mode until it is fixed.
+
+One field per line — `name | Label | type | options | format`:
+
+```
+titre      | Titre                | text     | bold
+paraphrase | Paraphrase           | textarea
+reference  | Référence indirecte  | text     | italic
+verifie    | Vérifié              | check
+nature     | Nature               | select   | idée, méthode, résultat | italic
+resume     | Résumé               | ai       | Résume le passage en une phrase.
+```
+
+Types: `text` (default), `textarea`, `check`, `select`, and `ai` (that field
+alone is written by the model, following the instruction in the options column).
+Formats: `bold`, `italic`, `bolditalic`, `underline`, `plain` (default) — the
+format may sit in the 4th column when the field has no options.
+
+The comment is one line per field, in order, each wrapped in its format — **no
+layout needed**. Each field is also a variable (`{{titre}}`, `{{paraphrase}}`,
+`{{reference}}`…) usable in the prompt and in the layout. Built-in variable names
+are reserved and silently ignored if reused, so a field can never shadow
+`{{text}}` or `{{comment}}`.
+
+A layout is only for departing from that default — putting two fields on one
+line, adding fixed text, or switching to a single free-form answer with `{{ai}}`.
+
+**The fields also live in the annotation sidebar.** In the reader's list of
+annotations, a card whose color has fields shows them in place of the single
+*Add comment* box: edit a field and the comment is rewritten at once, each
+field in its own format; the sparkle button in the card's header (next to
+*…*, before any other plugin's buttons) has the model complete the empty
+ones, keeping what you typed — even with the card collapsed. Annota remembers the values of every annotation
+it writes (`annota-fields.json` in the Zotero data directory), so an empty
+field keeps its place; older comments are read back line by line from the
+fields' formats. A comment written by hand, or one built with a custom
+layout Annota cannot read back, keeps Zotero's own comment box — nothing is
+rewritten that Annota did not understand. Turn it off in Settings → General.
+
+**Areas (images, tables) have their own colors.** Settings → Colors →
+*Areas (images, tables)* configures, color by color, the fields, trigger and
+prompt used for a frame drawn around a figure, a table or part of a page.
+The model receives the text found inside the area (the PDF must be open in
+the reader, which it is when you draw the frame); an image without text
+leaves its fields for you to fill in the card.
+
+**Give each color a name.** Optional, set in the settings next to the swatches:
+“Objection”, “Method”, “Quote”. It appears **above the fields** in the popup, so
+you know what you are filling in — while the footer keeps naming the swatch to
+click. Two different things: what you are doing, and where to click. A name alone
+does not activate a color.
+
+**Fields are grouped by color.** Clicking a color swatch *creates* the annotation
+outright — there is no "pick a color, then confirm" step — so the popup shows the
+fields of the color you are **about to** click: hover a swatch and its group
+replaces the previous one. No extra click; the gesture stays hover, type, click.
+
+Until you hover anything, the popup shows the **last color you used**, since one
+rarely highlights just once. A color with no fields is skipped. What you type is
+kept when you switch groups, so looking at another color costs you nothing.
+
+If the reader's popup structure isn't recognised (a Zotero version whose markup
+differs), Annota shows **its own row of swatches** instead of guessing which
+button is which color.
+
+Values are used once, for the annotation you just created — they are not stored
+afterwards. Only the fields of the color you finally pick are applied.
+
+#### Comment layout — mixing AI output with deterministic text
+
+Each color has an optional **layout** applied after generation. Leave it empty
+and the comment is just the AI's reply. Fill it in and you compose the comment
+yourself: `{{ai}}` is the model's reply, every other variable is inserted
+**verbatim** — not written by a model, so it can't be paraphrased or invented.
+
+```
+{{ai}}
+<i>{{references}}</i>
+```
+
+That gives the AI note followed by the works cited in the passage, exactly as
+found in the PDF. A line whose variables are all empty is dropped, so an
+unresolved citation leaves no stray `<i></i>`.
+
+Omit `{{ai}}` entirely and **no AI request is made at all** — the comment becomes
+purely deterministic (and needs no API key or provider).
+
+Each color also picks **when it runs**:
+- **Automatically** — as soon as you create the highlight (the classic flow: the
+  AI writes the note from the passage).
+- **Only on request** — nothing happens on highlight; you write your own
+  paraphrase by hand, then run the color later from the right-click menu so the
+  AI only **formats or titles what you wrote** (see `{{comment}}`). This keeps
+  the thinking yours.
+
+**Variables** substituted at call time:
+
+| Variable | Content |
+|---|---|
+| `{{text}}` | the highlighted text |
+| `{{comment}}` | the note already in the annotation (your hand-written paraphrase) |
+| `{{title}}` | title of the source document |
+| `{{authors}}` | authors of the source document |
+| `{{year}}` | year of the source document |
+| `{{abstract}}` | abstract of the source document (truncated per settings) |
+| `{{publication}}` | journal / book / proceedings |
+| `{{page}}` | page of the highlighted passage |
+| `{{references}}` | bibliographic entries for the works cited **inside** the passage |
+| `{{maxWords}}` | the "max length" setting |
+| `{{language}}` | the "output language" setting |
+
+Two modes depending on the prompt:
+- **Standard** (no `{{text}}` / `{{comment}}`) — your prompt acts as instructions,
+  and the highlighted text (plus your existing note and the document context, if
+  enabled) is appended automatically.
+- **Advanced** (the prompt contains `{{text}}` or `{{comment}}`) — the prompt is
+  sent as-is; you fully control the structure of the request.
+
+## 🖱️ Running a prompt on one annotation
+
+**In the PDF reader, right-click an annotation in the sidebar → Annota —
+generate comment.** This targets exactly that annotation (or the several you
+selected), instead of a whole document.
+
+It always overwrites the existing comment, because that is the point of the
+*Only on request* workflow: you write your paraphrase by hand, then ask the AI
+to format or title it (`{{comment}}`). Colors with no prompt stay untouched.
+
+## ⏳ Generating comments after the fact
+
+Highlights you made before installing Annota — or before changing your prompt —
+can be processed in bulk. **Right-click a reference, an attachment, or a
+selection of annotations** in your library and use the **Annota** submenu:
+
+- **Generate missing comments** — only annotations that have no comment yet.
+- **Regenerate all comments** — overwrites existing comments too.
+
+Works on multiple selected items at once, with a progress indicator. This is an
+explicit action, so it runs colors set to *Only on request* as well as automatic
+ones, and each annotation uses the prompt of its own color. Highlights whose
+color has no prompt are skipped and reported as such.
+
+## 💬 Chat with your documents
+
+Click the **💬 button** in the tab bar (next to sync), or press **⌘J / Ctrl+J**:
+a full-height chat panel takes the place of the right-hand pane, in the
+library as in the PDF reader, much like Beaver's. Close it (✕, the same
+shortcut, or Esc in an empty box) and Zotero's pane comes back as it was.
+Ask a question, get an answer grounded in the source.
+
+The panel follows what you look at: the PDF of the current reader tab, or the
+reference selected in the library. With no single reference selected, it
+talks to the whole library. The box at the bottom shows what the model reads —
+**📄 the document** or **📚 the library**, one click to switch — and, below
+it, **the AI it will use**: pick another one there in a click. Answers cite
+pages as green tags and references as grey numbers; click one to go there.
+
+**Two scopes**, picked above the text box:
+
+- **📄 This document** — the model reads the reference's details, the full
+  text, **your annotations** (highlights and comments) and **your notes**.
+  With the PDF open in the reader, the text is read page by page with the
+  journal's own page numbers: answers cite `[p. 215]`, and clicking the page
+  opens the PDF there.
+- **📚 My library** — Annota runs Zotero's own search (all fields, notes, full
+  text) on the words of your question, and sends the best matches with your
+  annotations that mention them. Answers cite `[1]`, `[2]`; clicking a number
+  selects that reference in the library.
+
+**Your AI, your choice.** The menu under the text box lists the providers already
+configured in the **✨ AI** tab — remote API (Mistral or any OpenAI-compatible
+endpoint), Ollama, Claude Code CLI, Apple Intelligence — and switches on the
+fly. *Default* follows the provider of your annotations. The **💬 Chat** tab
+can also give the chat **its own model** per provider (a big one for whole
+articles, while annotations keep a small, fast one), and **your own
+instructions** (field, tone, format), added to Annota's.
+
+**From the PDF to the chat.** Select a passage and click **💬 Ask Annota** in
+the selection popup, or right-click an annotation → **Annota — ask in chat**:
+the passage is quoted in the chat box, with its page, ready for your question.
+
+**Keep what matters.** Under each answer, copy it or **save it as a note** under
+the reference (with its question); the note button at the top keeps the whole
+exchange. Page and reference citations stay clickable in the note. Conversations
+are **saved** (file `annota-chats.json` in the Zotero data directory, the 300
+most recent): the **clock button** of the panel lists them by day, with a
+search box; click one to reopen it, hover to delete it. Coming back to a
+reference reopens its latest conversation, and **+** starts a new one without
+losing the previous. The PDF in the reader and its entry in the library share
+the same conversations. Saving can be turned off in **Settings → Chat**.
+
+**How much is sent.** A document that doesn't fit in the provider's window is
+cut by pages: the first page, then those closest to the question; each answer
+says what was sent. Defaults: about 100,000 characters for an API, 200,000 for
+the Claude CLI, 12,000 for Ollama and 6,000 for Apple Intelligence, whose
+windows are small — change it in **💬 Chat**. Ollama truncates silently beyond
+its context window: raise it (`OLLAMA_CONTEXT_LENGTH=16384 ollama serve`) before
+sending more.
+
+**Stop** interrupts a slow answer (the CLI process is killed, the HTTP request
+abandoned). Retries follow the setting of the ⚙️ General tab.
+
+> What leaves your computer depends on the provider: with an API, the text of
+> the document and your annotations are sent to it; with Ollama or Apple
+> Intelligence, nothing leaves the machine.
+
+## 🔗 From a note's citation back to the highlight
+
+Dragging a highlight into a note can give the bare citation, e.g.
+`(Valkokari, 2015, p. 17)`, if you set Zotero's note template to the citation
+alone: **Settings → Advanced → Config Editor**,
+`extensions.zotero.annotations.noteTemplates.highlight` = `<p>{{citation}}</p>`.
+
+On its own, Zotero keeps only the source and the page in that citation:
+**Go to Page** opens the page, not the passage, and nothing at all for an EPUB
+highlight without a page number. Annota fills the gap:
+
+- **The highlight's key goes into the citation** when you drop it
+  (`annotationKey` and `annotationURI` in the citation data). The visible text
+  does not change.
+- **Go to Page opens the highlight itself**: selected and framed as if you had
+  clicked it, with the annotations sidebar open on it.
+- **An Open annotation button** joins the citation's menu, also where Zotero
+  shows no Go to Page (EPUB without page numbers).
+
+Citations dropped before this version carry no key: Annota then opens the
+source's highlight on that page if it is the only one, and otherwise leaves
+Zotero's behaviour unchanged. In Obsidian, **Ariane** uses the key to point the
+citation at the matching annotation note (`zotflow-anno-key`).
+
+## 🔤 Spelling and grammar (macOS)
+
+Annota checks your annotation comments and notes with the **macOS spell
+checker** (the one Pages and Mail use): nothing to install, no key, nothing
+leaves the Mac.
+
+**While you type** — in any note editor (library, reader side pane, note
+windows) and in annotation comments in the reader — issues are underlined after
+a short pause: red for spelling, blue for grammar. Click an underlined word for
+its suggestions, *Ignore* or *Add to dictionary*; the small badge at the bottom
+of the text counts the issues and offers to fix them all. A correction is typed
+like any keystroke, so ⌘Z undoes it and Zotero saves it as usual. Annota never
+alters these editors: the underlining is drawn over the text (CSS highlights).
+On an older Zotero without that feature, the badge and the suggestions still
+work, without underlining.
+
+To review many texts at once:
+Right-click annotations in the reader, or references, attachments and notes in
+the library → **Check spelling and grammar**. The Annota panel opens on a
+review: each issue in its context, its kind (spelling or grammar), the
+explanation and the suggestions. Click a suggestion to apply it — the comment
+or note is saved at once — or ignore the issue, or add the word to the macOS
+dictionary. **Apply all first suggestions** fixes everything that has one.
+
+Only the visible text is checked: bold, italics and note formatting are kept
+as they are. Settings → General → *Spelling and grammar*: language (automatic
+or fixed), grammar on or off, checking while typing on or off.
+
+## 🔧 How it works
+
+- Listens to the `add` event of Zotero's notifier on annotation items.
+- Processes only `annotationType` = `highlight` (+ `underline` if enabled), with
+  non-empty text **and whose color has a prompt**; other highlights are ignored.
+- Sends the text to the configured prompt, then writes the response into
+  `annotationComment`. The reader updates on its own.
+- Writing the comment triggers a `modify` event (not `add`), so there is no
+  loop. An already-commented annotation (including one synced from another
+  device) is not regenerated.
+
+## 🔒 Security
+
+The API key is stored **in plain text** in the Zotero profile's preferences
+(`extensions.zotero.annota.apiKey`). Do not share your profile.
+
+## 🧑‍💻 Development
+
+- Per-color prompt resolution: `bootstrap.js` → `getPromptForColor()`
+  (returns `""` when the color has no prompt, which means "skip").
+- Annotation triggering / filtering: `bootstrap.js` → `handleItem()`.
+- Source metadata lookup: `bootstrap.js` → `getContext()`.
+- Request building (variables, modes): `bootstrap.js` → `buildPrompt()`.
+- Provider call shared by annotations and chat (retries, model, history,
+  cancel): `bootstrap.js` → `complete()`.
+- Chat panel, context building and citation rendering: `chat.js`
+  (`AnnotaChat`), loaded at startup. The panel is mounted in
+  `#zotero-item-pane` and `#zotero-context-pane` and hides their other
+  children while open, as Beaver does; the shortcut letter is the
+  `extensions.zotero.annota.chatShortcut` preference (empty = none).
+
+### 🚀 Releasing
+
+Bump `"version"` in `manifest.json`, then run:
+
+```bash
+./release.sh
+```
+
+It builds the `.xpi`, computes its SHA-256, regenerates `updates.json`, pushes,
+and creates the GitHub release.
+
+No `gh` at hand? Bump the version, push to `main`, then **Actions → Release →
+Run workflow**: GitHub does the same job (`.github/workflows/release.yml`) —
+it builds, creates the release with the `.xpi`, and only then pushes the
+matching `updates.json`. The hash in `updates.json` **must** match the
+released `.xpi` or Zotero will refuse the update — hence the script.
+
+---
+
+## 🙏 Thanks
+
+Thanks to **[Zotero](https://www.zotero.org/)** itself, for a reader whose
+`renderTextSelectionPopup` and `createAnnotationContextMenu` hooks are open
+enough that a plugin like this one can exist without touching a line of core
+code.
+
+Thanks to **[Mistral AI](https://mistral.ai/)**, whose models are what
+actually reads the highlighted passage and writes the note by default.
+
+And thanks to whoever reads this far: if you configure a color, tell me what
+broke. Six of the last releases came from exactly that.
+
+---
+
+## ☕ Buy me a coffee
+
+If Annota saves you time, you can buy me a coffee.
+
+[![Buy me a coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=&slug=liotou&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff)](https://buymeacoffee.com/liotou)
+
+I said at the top that this plugin was written by vibe coding with Claude, and
+I stand by it. But a model does not know what a highlight comment should look
+like, nor that a `<textarea>` slips past the reader's own keyboard guard, nor
+that a `page` field is silently swallowed by a reserved name. All of that came
+from using the plugin myself, on my own thesis, and saying what was wrong,
+release after release. The code is not mine. The plugin is. ☕
+
+---
+
+## ⚖️ Licence
+
+MIT, see [LICENSE](LICENSE).
+
+Source-grounded Research Chat and Capture Evidence: [architecture, workflows and limits](RESEARCH_CHAT.md).

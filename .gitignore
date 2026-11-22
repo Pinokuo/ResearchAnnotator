@@ -1,5 +1,22 @@
-# Artéfacts de build (régénérés par ./build.sh)
+# Build artifacts, local profiles and retained recovery evidence
 *.xpi
-
-# macOS
 .DS_Store
+/DEVELOPMENT-BUILD-*.json
+/NATIVE_*.json
+/REFINEMENT_*.json
+/RELIABILITY_*.json
+/BETA_*.json
+/ui-ux-screenshots-*/
+/native-workspace-test-*.json
+/native-*-pid.txt
+/native-*.audit.txt
+/*-regression*.txt
+/*-package*.txt
+/*-unit*.txt
+/*-browser*.txt
+/*-results*.txt
+/*.backup*
+/*.bak
+/*.before-*
+/*.candidate*
+/*.tmp

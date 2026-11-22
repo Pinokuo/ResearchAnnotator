@@ -1,34 +1,34 @@
 /* eslint-disable no-undef */
-// Annota : deux outils sur les annotations d'une couleur choisie.
+// Two annotation tools for a selected color.
 //
-//  1. Le défilé (review) : les annotations dont aucun champ n'est rempli
-//     passent une à une, comme des cartes. Pour chacune : le passage, sa
-//     source, ses champs, « Remplir avec l'IA », « Ouvrir dans le document »,
-//     puis « Enregistrer et suivante » ou « Passer ». Un compteur suit la
+// Review presents annotations with missing configured fields
+// as cards containing source passage, publication context, manual/AI fields,
+// explicit completion and original-document navigation.
+// Save/Next and Skip advance through the review with progress reporting.
 //     progression.
-//  2. La relance (refill) : sur les références sélectionnées, l'IA remplit
-//     de nouveau les champs cochés d'une couleur, les autres restant tels
-//     quels. Les commentaires d'avant sont sauvegardés ; une commande les
-//     rétablit.
+// Refill explicitly regenerates selected fields on selected publications,
+// leaving all other fields untouched.
+// Original structured values and native content are backed up for guarded
+// restoration.
 //
-// Les valeurs des champs sont lues et le commentaire recomposé comme dans la
-// carte d'annotation du lecteur (card-fields.js) : même format, même mémoire.
-// L'interface est une fenêtre superposée à la fenêtre principale de Zotero.
-// Chargé par bootstrap.js : Annota, AnnotaCardFields, AnnotaCiteLink, getPref,
-// log et toast y sont visibles.
+// Read field values through the same storage and formatting path
+// as reader cards; native Comment remains separate.
+// Render the review overlay inside Zotero's main window.
+// Loaded by bootstrap.js with compatibility service globals available,
+// including shared logging, configuration and navigation helpers.
 
 var AnnotaReview = {
 	HTML_NS: "http://www.w3.org/1999/xhtml",
 	TYPES: ["highlight", "underline", "image"],
 
-	// ---- Annotations visées ----
+	// Target annotations.
 
-	// Annotations des éléments sélectionnés (références, pièces jointes,
-	// annotations), ou de toute la bibliothèque si rien n'est sélectionné.
+	// Collect annotations from selected publications, attachments or annotation
+	// items; with no selection, use the selected library.
 	async annotationsOf(window, wholeLibrary) {
 		let out = [], seen = new Set();
 		let addAtt = att => {
-			if (!att || typeof att.getAnnotations !== "function") return;
+			if (!att?.isFileAttachment?.()) return;
 			for (let a of att.getAnnotations()) {
 				if (!seen.has(a.id) && this.TYPES.includes(a.annotationType)) { seen.add(a.id); out.push(a); }
 			}
@@ -52,9 +52,10 @@ var AnnotaReview = {
 		return out;
 	},
 
-	// Couleurs dotées de champs, avec leurs annotations : [{ key, hex, label,
-	// cfg, anns }], dans l'ordre de la palette.
+	// Return configured color groups and their annotations in palette order,
+	// with key, hex, label, configuration and annotation list.
 	groups(anns) {
+		// Shared schemas include global fields and inherited whole-response AI.
 		let byKey = new Map();
 		for (let a of anns) {
 			let key = Annota.keyForItem(a);
@@ -80,21 +81,35 @@ var AnnotaReview = {
 		return out;
 	},
 
-	// Valeurs des champs d'une annotation, ou null si son commentaire n'est
-	// pas dans le format des champs (on n'y touche pas).
+	// Read structured annotation values or return null when historical
+	// content cannot be interpreted safely; leave uncertain content untouched.
 	valuesOf(ann, cfg) {
+        if (typeof AnnotaInfrastructure !== "undefined") return AnnotaCardFields.get(ann) || { values: {}, references: "" };
 		let r = AnnotaCardFields.resolve(cfg.entry, cfg.schema, ann.libraryID,
-			{ id: ann.key, comment: ann.annotationComment || "", color: ann.annotationColor });
+			{ id: ann.key, comment: ann.annotationComment || "",
+				color: ann.annotationColor, type: ann.annotationType });
 		return r;
 	},
 
 	isEmpty(ann, cfg) {
+        if (typeof AnnotaInfrastructure !== "undefined") {
+            return this.fieldStates(ann,cfg).some(field=>["missing","failed","cancelled","outdated"].includes(field.state));
+        }
 		if (!String(ann.annotationComment || "").trim()) return true;
 		let r = this.valuesOf(ann, cfg);
 		return !!r && cfg.schema.every(f => !String(r.values[f.name] || "").trim());
 	},
 
-	// Ordre de lecture : par source, puis par position dans le document.
+    fieldStates(ann,cfg) {
+        const values=this.valuesOf(ann,cfg)?.values||{};
+        return cfg.schema.map(field=>{
+            if(field.type==="ai"&&typeof AnnotaInfrastructure!=="undefined")return {...field,state:AnnotaInfrastructure.lifecycle.describe(ann,field).state};
+            const value=values[field.name],filled=field.type==="check"?Object.hasOwn(values,field.name):Array.isArray(value)?value.length>0:String(value??"").trim()!=="";
+            return {...field,state:filled?"completed":"missing"};
+        });
+    },
+
+	// Reading order: publication source, then document position.
 	sortForReading(anns) {
 		return anns.slice().sort((a, b) => (a.parentItemID - b.parentItemID)
 			|| String(a.annotationSortIndex || "").localeCompare(String(b.annotationSortIndex || "")));
@@ -126,20 +141,36 @@ var AnnotaReview = {
 			+ (ann.annotationPageLabel ? " · p. " + ann.annotationPageLabel : "");
 	},
 
-	// Enregistre les valeurs : commentaire recomposé selon la mise en page de
-	// la couleur, comme la carte du lecteur.
-	async save(ann, values, refs) {
+	// Save structured values through the shared card/storage formatting path.
+	// color, matching the reader card.
+	async save(ann, values, refs, expected) {
+        if (typeof AnnotaInfrastructure !== "undefined") {
+            const previous = AnnotaCardFields.get(ann)?.values || {}, patch = {};
+            for (const field of Annota.annotationFields(Annota.keyForItem(ann))) {
+                if (expected && JSON.stringify(values[field.name]) === JSON.stringify(expected[field.name])) continue;
+                if (field.type !== "ai" && Object.hasOwn(values, field.name) && JSON.stringify(previous[field.name]) !== JSON.stringify(values[field.name])) patch[field.name] = values[field.name];
+            }
+            if (!Object.keys(patch).length) return false;
+            const saved = await AnnotaCardFields.saveValues(ann, patch, refs, expected);
+            if (Object.entries(patch).some(([name,value]) => JSON.stringify(saved.values[name]) !== JSON.stringify(value))) throw Error("A field changed elsewhere. Reload the annotation before saving this draft.");
+            await Annota._syncPaperResearchNote(ann); return true;
+        }
 		let comment = AnnotaCardFields.compose(ann, { _annotaRefs: refs || "" }, values);
-		if (comment === String(ann.annotationComment || "")) return false;
 		AnnotaCardFields.remember(ann, values, refs || "", comment);
+		if (comment === String(ann.annotationComment || "")) return false;
 		ann.annotationComment = comment;
 		Annota.setFailedTag(ann, false);
 		await ann.saveTx();
 		return true;
 	},
 
-	// L'IA remplit les champs vides de « values » ; rend { values, refs }.
-	async aiFill(ann, values) {
+	// Generate missing requested fields and return { values, refs }.
+	async aiFill(ann, values, expected) {
+        if (typeof AnnotaInfrastructure !== "undefined") {
+            await this.save(ann, values, AnnotaCardFields.get(ann)?.references || "", expected);
+            const result = await AnnotaInfrastructure.generateJob(ann);
+            return { values: result?.values || {}, refs: result?.references || "" };
+        }
 		let text = await this.passage(ann);
 		let built = {};
 		let comment = await Annota.buildComment({
@@ -151,7 +182,7 @@ var AnnotaReview = {
 		return { values: built.values || values, refs: built.refs || "" };
 	},
 
-	// ---- Fenêtre superposée ----
+	// Overlay presentation.
 
 	el(doc, tag, cls, text) {
 		let e = doc.createElementNS(this.HTML_NS, tag);
@@ -187,7 +218,7 @@ var AnnotaReview = {
 		card.appendChild(body);
 		card.appendChild(foot);
 		back.appendChild(card);
-		// La fenêtre garde ses touches : Zotero n'y réagit pas.
+		// Keep keyboard input inside the review window.
 		for (let type of ["keydown", "keypress", "keyup"]) {
 			back.addEventListener(type, e => {
 				if (type === "keydown" && e.key === "Escape") { this.close(window); e.preventDefault(); }
@@ -208,7 +239,7 @@ var AnnotaReview = {
 		catch (e) {}
 	},
 
-	// Écran de choix de la couleur. onPick(group) reçoit le groupe choisi.
+	// Color-selection screen; onPick receives the selected group.
 	pickColor(ui, groups, countOf, onPick, hint) {
 		let { doc, body, foot } = ui;
 		body.textContent = "";
@@ -232,7 +263,7 @@ var AnnotaReview = {
 		body.appendChild(grid);
 	},
 
-	// ---- 1. Le défilé ----
+	// Annotation review workflow.
 
 	async startReview(window, wholeLibrary) {
 		let selected = !wholeLibrary && (window.ZoteroPane.getSelectedItems() || []).length > 0;
@@ -249,7 +280,7 @@ var AnnotaReview = {
 	runReview(window, ui, group, list) {
 		let { doc, body, foot } = ui;
 		let i = 0, saved = 0, skipped = 0;
-		let fields = {}, refs = "", busy = false;
+		let fields = {}, refs = "", busy = false, baseline = {};
 
 		let finish = () => {
 			ui.back._onKey = null;
@@ -266,8 +297,10 @@ var AnnotaReview = {
 			for (let f of group.cfg.schema) {
 				let el = fields[f.name];
 				if (!el) { v[f.name] = ""; continue; }
-				if (el.type === "checkbox") v[f.name] = el.checked ? "true" : "";
-				else if (el.tagName === "DIV") v[f.name] = el._raw || "";
+                if (f.type === "multiselect" && el.readValues) v[f.name] = el.readValues();
+                else if (f.type === "multiselect" && el.getValues) v[f.name] = el.getValues();
+				else if (el.type === "checkbox") v[f.name] = el.checked ? "true" : "";
+				else if (String(el.localName||el.tagName).toLowerCase() === "div") v[f.name] = el._raw || "";
 				else v[f.name] = String(el.value || "").trim();
 			}
 			return v;
@@ -276,8 +309,11 @@ var AnnotaReview = {
 			for (let f of group.cfg.schema) {
 				let el = fields[f.name], v = values[f.name] || "";
 				if (!el) continue;
-				if (el.type === "checkbox") el.checked = !!v;
-				else if (el.tagName === "DIV") { el._raw = v; el.textContent = AnnotaCardFields.plain(v); el.hidden = !v; }
+                if (f.type === "multiselect" && el.setValues) el.setValues(v || []);
+				else if (el.type === "checkbox") el.checked = /^(true|yes|oui|1|x|✓)$/i.test(String(v));
+				else if (String(el.localName||el.tagName).toLowerCase() === "div") { el._raw = v; el.textContent = AnnotaCardFields.plain(v) || "Not generated yet"; el.hidden = false;
+                    if(el._stateLabel){const state=AnnotaInfrastructure.lifecycle.describe(list[i],f).state;el._stateLabel.textContent="AI status: "+state;el._stateAction.hidden=!["failed","cancelled","outdated"].includes(state);el._stateAction.textContent=(state==="outdated"?"Regenerate outdated ":"Retry ")+f.label;}
+                }
 				else { el.value = AnnotaCardFields.plain(v); this.grow(el); }
 			}
 		};
@@ -311,8 +347,22 @@ var AnnotaReview = {
 				if (f.type === "ai") {
 					row.appendChild(this.el(doc, "span", "annota-rv-label", f.label + " (IA)"));
 					el = this.el(doc, "div", "annota-rv-ai");
-					el.hidden = true;
+					el.textContent = "Not generated yet";
+					if(typeof AnnotaInfrastructure!=="undefined"){
+                        const badge=this.el(doc,"span","annota-rv-hint"),button=this.button(doc,"Retry "+f.label,"",async()=>{
+                            if(busy)return;const state=AnnotaInfrastructure.lifecycle.describe(ann,f).state;
+                            if(state==="outdated"&&!Services.prompt.confirm(window,"Annotation Review","Explicitly regenerate this outdated AI value? The previous value is preserved if generation fails."))return;
+                            busy=true;button.disabled=true;
+                            try{await this.save(ann,read(),refs,baseline);const result=await AnnotaInfrastructure.generateJob(ann,{fieldIds:[f.id],regenerate:true});baseline={...(result?.values||{})};write(baseline);status.textContent="Saved";}
+                            catch(error){status.textContent=String(error.message||error);}finally{busy=false;button.disabled=false;}
+                        });
+                        el._stateLabel=badge;el._stateAction=button;row.appendChild(badge);row.appendChild(button);
+                    }
 				}
+				else if (f.type === "multiselect") {
+                    row.appendChild(this.el(doc, "span", "annota-rv-label", f.label));
+                    el = Annota.createMultiSelect(doc, f, [], () => {});
+                }
 				else if (f.type === "check") {
 					el = this.el(doc, "input");
 					el.setAttribute("type", "checkbox");
@@ -353,7 +403,13 @@ var AnnotaReview = {
 				ai.disabled = true;
 				status.textContent = Annota.t("card.filling");
 				try {
-					let r = await this.aiFill(ann, read());
+                    const draft = read();
+					let r = await this.aiFill(ann, draft, baseline);
+                    if (r) {
+                        const latest = read();
+                        for (const field of group.cfg.schema.filter(f => f.type !== "ai")) if (JSON.stringify(latest[field.name]) !== JSON.stringify(draft[field.name])) r.values[field.name] = latest[field.name];
+                        baseline = Object.assign({}, AnnotaCardFields.get(ann)?.values || {});
+                    }
 					if (r) { write(r.values); refs = r.refs; status.textContent = Annota.t("rv.ai.done"); }
 					else status.textContent = "";
 				}
@@ -361,7 +417,7 @@ var AnnotaReview = {
 				finally { busy = false; ai.disabled = false; }
 			}, Annota.t("rv.ai.title"));
 			let openDoc = this.button(doc, Annota.t("rv.open"), "", () => {
-				if (AnnotaCiteLink) AnnotaCiteLink.showAnnotation(ann).catch(e => log("défilé : " + e));
+				if (AnnotaCiteLink) AnnotaCiteLink.showAnnotation(ann).catch(e => log("Annotation review: " + e));
 				else Zotero.Reader.open(ann.parentItemID, { annotationID: ann.key });
 			});
 			let prev = this.button(doc, "←", "annota-rv-ghost", () => { if (i > 0) { i--; show(); } }, Annota.t("rv.prev"));
@@ -374,7 +430,7 @@ var AnnotaReview = {
 				try {
 					let v = read();
 					if (group.cfg.schema.some(f => String(v[f.name] || "").trim())) {
-						if (await this.save(ann, v, refs)) saved++;
+						if (await this.save(ann, v, refs, baseline)) saved++;
 					}
 					else skipped++;
 					i++;
@@ -402,18 +458,20 @@ var AnnotaReview = {
 				else if (accel && e.key === "ArrowRight") { e.preventDefault(); skip.click(); }
 				else if (accel && e.key === "ArrowLeft") { e.preventDefault(); prev.click(); }
 			};
+            baseline = Object.assign({}, this.valuesOf(ann, group.cfg)?.values || {});
+            write(baseline);
 			if (first) first.focus();
 		};
 		show();
 	},
 
 	grow(el) {
-		if (!el || el.tagName !== "TEXTAREA") return;
+		if (!el || String(el.localName||el.tagName).toLowerCase() !== "textarea") return;
 		el.style.height = "auto";
 		el.style.height = el.scrollHeight + "px";
 	},
 
-	// ---- 2. La relance de l'IA sur des champs choisis ----
+	// Explicit AI refill for selected fields.
 
 	async startRefill(window) {
 		let ui = this.open(window, Annota.t("rf.title"));
@@ -457,15 +515,16 @@ var AnnotaReview = {
 			let notReady = Annota.providerReadyError();
 			if (notReady) { status.textContent = notReady; return; }
 			this.close(window);
-			this.refill(window, group, chosen, onlyEmpty.checked).catch(e => log("relance IA : " + e));
+			this.refill(window, group, chosen, onlyEmpty.checked).catch(e => log("AI refill: " + e));
 		});
 		foot.appendChild(this.button(doc, Annota.t("rv.back"), "annota-rv-ghost", () => this.startRefill(window)));
 		foot.appendChild(go);
 	},
 
-	// Relance : les champs choisis sont vidés (ou seulement complétés s'ils
-	// sont vides), l'IA les remplit ; les autres champs reprennent leur valeur.
+	// Refill clears only the explicitly selected values, or fills them
+	// only when missing; all other values are restored unchanged.
 	async refill(window, group, chosen, onlyEmpty) {
+        if (typeof AnnotaInfrastructure !== "undefined") return AnnotaInfrastructure.refill(window, group, chosen, onlyEmpty);
 		let todo = [];
 		let unreadable = 0;
 		for (let ann of group.anns) {
@@ -476,13 +535,13 @@ var AnnotaReview = {
 		}
 		let ps = Services.prompt;
 		if (!todo.length) {
-			ps.alert(window, "Annota", Annota.t("rf.nothing") + (unreadable ? "\n\n" + Annota.t("rf.unreadable", { n: unreadable }) : ""));
+			ps.alert(window, "ResearchAnnotator", Annota.t("rf.nothing") + (unreadable ? "\n\n" + Annota.t("rf.unreadable", { n: unreadable }) : ""));
 			return;
 		}
-		if (!ps.confirm(window, "Annota", Annota.t("rf.confirm", { n: todo.length, fields: chosen.length })
+		if (!ps.confirm(window, "ResearchAnnotator", Annota.t("rf.confirm", { n: todo.length, fields: chosen.length })
 			+ (unreadable ? "\n\n" + Annota.t("rf.unreadable", { n: unreadable }) : ""))) return;
 
-		// Sauvegarde des commentaires d'avant.
+		// Back up prior values and native content.
 		let { IO, Path } = AnnotaCiteLink ? AnnotaCiteLink._io() : { IO: IOUtils, Path: PathUtils };
 		let dir = Path.join(Zotero.DataDirectory.dir, "annota", "sauvegardes-ia");
 		await IO.makeDirectory(dir, { createAncestors: true, ignoreExisting: true });
@@ -490,7 +549,7 @@ var AnnotaReview = {
 		let backup = { date: new Date().toISOString(), annotations: [] };
 
 		let pw = new Zotero.ProgressWindow({ closeOnClick: false });
-		pw.changeHeadline("Annota");
+		pw.changeHeadline("ResearchAnnotator");
 		let line = new pw.ItemProgress("chrome://zotero/skin/tick.png", Annota.t("rf.progress", { i: 0, n: todo.length }));
 		pw.show();
 		let done = 0, failed = 0;
@@ -501,8 +560,8 @@ var AnnotaReview = {
 			try {
 				let ask = Object.assign({}, t.values);
 				for (let n of t.targets) ask[n] = "";
-				// Les champs vides non choisis ne doivent pas être remplis : on
-				// les remet à vide après coup.
+				// Do not accidentally fill unselected empty fields;
+				// restore those empty values after generation.
 				let r = await this.aiFill(t.ann, ask);
 				if (!r) { failed++; continue; }
 				let values = Object.assign({}, t.values);
@@ -516,7 +575,7 @@ var AnnotaReview = {
 			}
 			catch (e) {
 				failed++;
-				log("relance IA, " + t.ann.key + " : " + e);
+				log("AI refill, " + t.ann.key + " : " + e);
 			}
 			await IO.writeUTF8(file, JSON.stringify(backup));
 		}
@@ -532,10 +591,15 @@ var AnnotaReview = {
 		let files = [];
 		try { files = (await IO.getChildren(dir)).filter(f => /relance-.*\.json$/.test(f)).sort(); }
 		catch (e) { files = []; }
-		if (!files.length) { ps.alert(window, "Annota", Annota.t("rf.noundo")); return; }
+		if (!files.length) { ps.alert(window, "ResearchAnnotator", Annota.t("rf.noundo")); return; }
 		let file = files[files.length - 1];
 		let data = JSON.parse(await IO.readUTF8(file));
-		if (!ps.confirm(window, "Annota", Annota.t("rf.undoconfirm", { n: data.annotations.length, date: data.date }))) return;
+		if (!ps.confirm(window, "ResearchAnnotator", Annota.t("rf.undoconfirm", { n: data.annotations.length, date: data.date }))) return;
+        if (data.version === 2 && typeof AnnotaInfrastructure !== "undefined") {
+            const result = await AnnotaInfrastructure.undoRefill(data);
+            await IO.move(file, file.replace(/\.json$/, ".annulee.json"));
+            ps.alert(window, "ResearchAnnotator", Annota.t("rf.undone", result)); return;
+        }
 		let restored = 0, kept = 0;
 		for (let a of data.annotations) {
 			let ann = await Zotero.Items.getByLibraryAndKeyAsync(a.libraryID, a.key);
@@ -545,7 +609,7 @@ var AnnotaReview = {
 			restored++;
 		}
 		await IO.move(file, file.replace(/\.json$/, ".annulee.json"));
-		ps.alert(window, "Annota", Annota.t("rf.undone", { restored, kept }));
+		ps.alert(window, "ResearchAnnotator", Annota.t("rf.undone", { restored, kept }));
 	},
 
 	// ---- Styles ----

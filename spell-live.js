@@ -1,30 +1,30 @@
 /* eslint-disable no-undef */
-// Annota — orthographe et grammaire pendant la frappe, partout où l'on écrit.
+// Live spelling and grammar in supported editable surfaces.
 //
-// Zones surveillées : les éditeurs de notes (bibliothèque, volet du lecteur,
-// fenêtres de note) et les commentaires d'annotation du lecteur. Annota ne
-// modifie pas ces éditeurs : il écoute la frappe dans leur document, vérifie
-// le texte après une pause (correcteur de macOS, spell.js) et souligne les
-// fautes par l'API de surlignage CSS (CSS.highlights), qui marque des plages
-// de texte sans toucher au contenu.
+// Watch library, reader-pane and separate-window note editors,
+// plus reader annotation Comments. Do not rewrite those editors:
+// observe typing, check after a pause with the macOS service,
+// and use CSS.highlights to mark text ranges without changing
+// their stored content.
+// Keep source quotations and opaque note elements untouched.
 //
-// Une correction est saisie comme une frappe (execCommand « insertText ») :
-// l'éditeur l'enregistre et l'annule (⌘Z) comme n'importe quelle saisie.
-// Sans API de surlignage (Zotero ancien), le badge et la bulle restent.
+// Apply an accepted correction as insertText input so the editor
+// handles saving and undo like an ordinary user edit.
+// Without CSS Highlight support, retain the badge and correction popup.
 
 var AnnotaSpellLive = {
-	DELAY: 1200,           // pause de frappe avant vérification, en ms
-	SCAN: 2000,            // recherche de nouveaux éditeurs, en ms
-	MAX: 50000,            // au-delà, le texte n'est pas vérifié en direct
+	DELAY: 1200,           // Typing debounce before checking, in milliseconds.
+	SCAN: 2000,            // Interval for discovering newly opened editors.
+	MAX: 50000,            // Maximum text length for live checking.
 	BLOCKS: /^(P|DIV|LI|H[1-6]|BLOCKQUOTE|PRE|TD|TH|TR|UL|OL|TABLE|SECTION|ARTICLE|HEADER|FOOTER)$/,
-	// Citations, passages surlignés et formules d'une note : texte de la
-	// source, ni souligné ni corrigé (voir AnnotaSpell.OPAQUE).
+	// Citations, source highlights and formulas are source content;
+	// do not underline or correct them. See AnnotaSpell.OPAQUE.
 	OPAQUE: ".citation, .highlight, .underline, .math, [contenteditable=\"false\"]",
 
 	_docs: new Map(),      // document → { states, timers, handlers, popover, badge }
 	_timer: null,
 	_broken: false,
-	ignored: new Set(),    // mots ignorés pour la session
+	ignored: new Set(),    // Words ignored for this session.
 
 	enabled() {
 		return !this._broken && !!AnnotaSpell && AnnotaSpell.available()
@@ -38,7 +38,7 @@ var AnnotaSpellLive = {
 				if (this.enabled()) this.scan();
 				else this.detachAll();
 			}
-			catch (e) { log("orthographe en direct : " + e); }
+			catch (e) { log("Live spelling: " + e); }
 			this._timer = setTimeout(tick, this.SCAN);
 		};
 		tick();
@@ -50,7 +50,7 @@ var AnnotaSpellLive = {
 		this.detachAll();
 	},
 
-	// ---- Repérage des éditeurs ----
+	// Discover supported editors.
 
 	scan() {
 		let en = Services.wm.getEnumerator(null);
@@ -66,7 +66,7 @@ var AnnotaSpellLive = {
 					let fd = f && f.contentDocument;
 					if (fd && fd.body) this.attach(fd);
 				}
-				catch (e) { /* éditeur en cours de chargement */ }
+				catch (e) { /* The editor is still loading. */ }
 			}
 		}
 		for (let r of (Zotero.Reader && Zotero.Reader._readers) || []) {
@@ -76,7 +76,7 @@ var AnnotaSpellLive = {
 			}
 			catch (e) {}
 		}
-		// Documents disparus (note fermée, onglet fermé) : on oublie.
+		// Forget documents removed by closing notes or tabs.
 		for (let doc of Array.from(this._docs.keys())) {
 			let alive = false;
 			try { alive = !!doc.defaultView && !doc.defaultView.closed && !!doc.body; } catch (e) {}
@@ -130,7 +130,7 @@ var AnnotaSpellLive = {
 		rec.handlers = h;
 		this.injectStyle(doc);
 		this._docs.set(doc, rec);
-		// Éditeur déjà focalisé (note ouverte avant l'activation) : on vérifie.
+		// Check an editor already focused before extension activation.
 		let el = this.targetOf(doc.activeElement);
 		if (el) this.schedule(doc, rec, el, 300);
 	},
@@ -150,18 +150,18 @@ var AnnotaSpellLive = {
 			let reg = this.registry(doc);
 			if (reg) { reg.delete("annota-spelling"); reg.delete("annota-grammar"); }
 		}
-		catch (e) { /* document fermé */ }
+		catch (e) { /* The document has closed. */ }
 	},
 
 	detachAll() {
 		for (let doc of Array.from(this._docs.keys())) this.detach(doc);
 	},
 
-	// Champs de la carte d'annotation d'Annota (titre, paraphrase…) : des
-	// zones de texte. Le correcteur intégré y souligne les fautes, mais ne
-	// propose ses corrections qu'au clic droit, absent du panneau du lecteur.
-	// On les vérifie donc aussi ; faute de soulignement possible dans un
-	// champ, la bulle s'ouvre sur le mot fautif sous le curseur.
+	// Structured reader-card text fields need checking too. The system
+	// checker can underline issues but may not provide all correction UI.
+	// offers corrections only through a right-click menu absent from the reader sidebar.
+	// Where text controls cannot host range highlights, show a popup
+	// for the issue under the pointer instead.
 	FIELD: "textarea.annota-card-input",
 
 	fieldRoot(t) {
@@ -176,13 +176,13 @@ var AnnotaSpellLive = {
 		return !!el && el.tagName === "TEXTAREA";
 	},
 
-	// Zone surveillée : une zone éditable ou un champ de la carte.
+	// Watch editable content roots and reader-card text controls.
 	targetOf(t) {
 		return this.editableRoot(t) || this.fieldRoot(t);
 	},
 
-	// Racine éditable d'un élément : la plus haute zone contenteditable, hors
-	// champs de formulaire (le formulaire de champs d'Annota en a).
+	// Find the outermost contenteditable root, excluding native form
+	// controls used inside structured field forms.
 	editableRoot(t) {
 		try {
 			if (t && t.nodeType !== 1) t = t.parentElement;
@@ -201,12 +201,12 @@ var AnnotaSpellLive = {
 		catch (e) { return null; }
 	},
 
-	// ---- Vérification ----
+	// Run checking.
 
 	onInput(doc, rec, e) {
 		let el = this.targetOf(e.target);
 		if (!el) return;
-		// Le texte a bougé : les soulignements d'avant seraient décalés.
+		// Invalidate old highlights after text changes because offsets have moved.
 		let st = rec.states.get(el);
 		if (st && st.issues.length) {
 			st.issues = [];
@@ -222,12 +222,12 @@ var AnnotaSpellLive = {
 		if (prev) w.clearTimeout(prev);
 		rec.timers.set(el, w.setTimeout(() => {
 			rec.timers.delete(el);
-			this.check(doc, rec, el).catch(e => log("orthographe en direct : " + e));
+			this.check(doc, rec, el).catch(e => log("Live spelling: " + e));
 		}, delay));
 	},
 
-	// Texte visible de la zone et correspondance vers ses nœuds de texte. Un
-	// saut de ligne sépare les blocs (paragraphes, éléments de liste…).
+	// Visible field text and its mapping to text nodes. A
+	// Separate block elements with a virtual newline.
 	snapshot(el) {
 		let doc = el.ownerDocument;
 		let walker = doc.createTreeWalker(el, 4 /* SHOW_TEXT */);
@@ -237,8 +237,8 @@ var AnnotaSpellLive = {
 			if (!data) continue;
 			let opaque = node.parentElement && node.parentElement.closest(this.OPAQUE);
 			if (opaque && opaque !== el && el.contains(opaque)) {
-				// Une espace par élément, hors des segments : aucune plage
-				// ne peut la contenir.
+				// Represent opaque elements with spaces outside editable segments;
+				// no correction range may contain them.
 				if (opaque !== lastOpaque) {
 					gaps.push(text.length);
 					text += " ";
@@ -290,14 +290,14 @@ var AnnotaSpellLive = {
 		let res;
 		try { res = await AnnotaSpell.check([snap.text]); }
 		catch (e) {
-			// Correcteur indisponible : on s'arrête plutôt que de relancer
-			// osascript à chaque frappe.
+			// If the checker is unavailable, stop rather than restarting
+			// osascript after every keystroke.
 			this._broken = true;
-			log("orthographe en direct désactivée : " + e);
+			log("Live spelling disabled: " + e);
 			this.detachAll();
 			return;
 		}
-		// Frappe pendant la vérification : le résultat ne correspond plus.
+		// Ignore results if typing changed the text while checking ran.
 		if (!el.isConnected || this.snapshot(el).text !== snap.text) return;
 		let issues = AnnotaSpell.normalize(snap.text, res[0])
 			.filter(x => !this.ignored.has(x.word));
@@ -307,8 +307,8 @@ var AnnotaSpellLive = {
 		this.showBadge(doc, rec, el);
 	},
 
-	// Champ de la carte : le texte est sa valeur ; les fautes n'ont que des
-	// positions, sans plage à souligner.
+	// Text controls expose value offsets but no DOM ranges for
+	// CSS highlights.
 	async checkField(doc, rec, el) {
 		let text = String(el.value || "");
 		if (!text.trim() || text.length > this.MAX) {
@@ -320,7 +320,7 @@ var AnnotaSpellLive = {
 		try { res = await AnnotaSpell.check([text]); }
 		catch (e) {
 			this._broken = true;
-			log("orthographe en direct désactivée : " + e);
+			log("Live spelling disabled: " + e);
 			this.detachAll();
 			return;
 		}
@@ -355,10 +355,10 @@ var AnnotaSpellLive = {
 			if (gr.length) reg.set("annota-grammar", new w.Highlight(...gr));
 			else reg.delete("annota-grammar");
 		}
-		catch (e) { log("orthographe en direct, soulignement : " + e); }
+		catch (e) { log("Live spelling highlight: " + e); }
 	},
 
-	// ---- Bulle de correction ----
+	// ---- Correction popover ----
 
 	onCaret(doc, rec) {
 		let field = this.fieldRoot(doc.activeElement);
@@ -400,7 +400,7 @@ var AnnotaSpellLive = {
 		return e;
 	},
 
-	// Bouton qui n'enlève pas le focus à l'éditeur (la sélection y reste).
+	// Popup buttons must preserve editor focus and selection.
 	btn(doc, label, cls, fn, title) {
 		let b = this.mk(doc, "button", cls, label);
 		b.type = "button";
@@ -439,7 +439,7 @@ var AnnotaSpellLive = {
 			}));
 			if (x.type === "spelling") {
 				acts.appendChild(this.btn(doc, Annota.t("sp.learn"), "annota-live-link", () => {
-					AnnotaSpell.learn(x.word).catch(e => log("orthographe : " + e));
+					AnnotaSpell.learn(x.word).catch(e => log("Spelling: " + e));
 					this.ignore(doc, rec, x.word);
 				}, Annota.t("sp.learn.title")));
 			}
@@ -455,7 +455,7 @@ var AnnotaSpellLive = {
 		}
 		(doc.body || doc.documentElement).appendChild(pop);
 		rec.popover = pop;
-		// Sous le mot, ou au-dessus s'il n'y a pas la place ; jamais hors cadre.
+		// Place the popup below the word, or above when needed, within bounds.
 		let w = doc.defaultView;
 		let pw = pop.offsetWidth, ph = pop.offsetHeight;
 		let left = Math.max(6, Math.min(rect.left, w.innerWidth - pw - 6));
@@ -473,9 +473,9 @@ var AnnotaSpellLive = {
 		if (rec.badgeFor) this.showBadge(doc, rec, rec.badgeFor);
 	},
 
-	// Remplacements saisis comme une frappe. Du dernier au premier : les
-	// positions des fautes précédentes restent alors exactes, quel que soit
-	// le nombre de nœuds que l'éditeur réécrit.
+	// Apply replacements from last to first so earlier offsets remain
+	// valid even if the editor restructures multiple DOM nodes.
+	// Do not assume a stable text-node layout after a correction.
 	replace(doc, rec, el, edits) {
 		this.closePopover(rec);
 		edits.sort((p, q) => q.issue.start - p.issue.start);
@@ -493,15 +493,15 @@ var AnnotaSpellLive = {
 				sel.addRange(r);
 				if (doc.execCommand("insertText", false, text)) done++;
 			}
-			catch (e) { log("orthographe en direct, remplacement : " + e); }
+			catch (e) { log("Live spelling replacement: " + e); }
 		}
-		if (done < edits.length) toast("Annota", Annota.t("sp.err.some", { n: edits.length - done }), "error");
-		// La frappe simulée déclenche « input » : la vérification suivra.
+		if (done < edits.length) toast("ResearchAnnotator", Annota.t("sp.err.some", { n: edits.length - done }), "error");
+		// Simulated input triggers the next live-check cycle.
 	},
 
-	// Dans un champ : sélection du mot puis frappe simulée, qui garde ⌘Z et
-	// déclenche « input », donc l'enregistrement de la carte. À défaut,
-	// remplacement direct et « input » envoyé à la main.
+	// For a text control, select the word and insert text to preserve
+	// undo and trigger the card's input/save path. If unsupported,
+	// replace the value and dispatch input explicitly.
 	replaceInField(doc, el, edits) {
 		let done = 0;
 		for (let { issue, text } of edits) {
@@ -519,12 +519,12 @@ var AnnotaSpellLive = {
 				}
 				done++;
 			}
-			catch (e) { log("orthographe en direct, remplacement : " + e); }
+			catch (e) { log("Live spelling replacement: " + e); }
 		}
-		if (done < edits.length) toast("Annota", Annota.t("sp.err.some", { n: edits.length - done }), "error");
+		if (done < edits.length) toast("ResearchAnnotator", Annota.t("sp.err.some", { n: edits.length - done }), "error");
 	},
 
-	// ---- Badge : nombre de fautes de la zone en cours ----
+	// ---- Badge: error count in the current field ----
 
 	showBadge(doc, rec, el) {
 		let st = rec.states.get(el);
@@ -574,7 +574,7 @@ var AnnotaSpellLive = {
 		rec.badgeFor = null;
 	},
 
-	// ---- Styles injectés dans chaque éditeur ----
+	// Inject styles separately into each editor document.
 
 	injectStyle(doc) {
 		if (doc.getElementById("annota-spell-live-style")) return;

@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Research Explorer</title>
+<style>
+:root { color-scheme:light dark; }
+body[data-workspace-section="saved"] .workspace { display:block; }
+body[data-workspace-section="saved"] .workspace > main,body[data-workspace-section="saved"] > .toolbar,body[data-workspace-section="saved"] aside > fieldset:nth-of-type(1),body[data-workspace-section="saved"] aside > fieldset:nth-of-type(2),body[data-workspace-section="saved"] aside > details { display:none; }
+body:not([data-workspace-section="saved"]) #saved-panel { display:none; }
+body[data-workspace-section="saved"] #saved { display:block;width:100%;min-height:240px; }
+body[data-workspace-section="saved"] aside { width:auto;max-width:none;resize:none; }
+body { font: message-box; background: Canvas; color: CanvasText; margin: 16px; }
+button,input,select,textarea { font: inherit; padding: 4px; max-width: 100%; box-sizing: border-box; }
+select,option { background:Field; color:FieldText; }
+button { margin: 3px; } label { display: inline-block; margin: 4px; }
+.toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+#search { flex:1; min-width:200px; } .workspace { display:grid; grid-template-columns:minmax(260px,320px) minmax(320px,1fr); gap:16px; }
+aside { resize:horizontal; overflow:auto; min-width:240px; max-width:480px; }
+fieldset,.card { border:1px solid GrayText; border-radius:5px; margin:8px 0; padding:8px; }
+.filter-group { border-left:2px solid GrayText; padding-left:8px; margin:8px 0; }
+.filter-rule { border-top:1px solid GrayText; padding:6px 0; } .filter-rule select { max-width:100%; }
+.filter-rule select[multiple] { display:block; width:100%; max-height:90px; }
+.card summary { cursor:pointer; line-height:1.6; } .card p { margin:6px 0; white-space:pre-wrap; }
+.swatch { display:inline-block; width:10px; height:10px; border:1px solid GrayText; margin-right:6px; }
+#status,#count { white-space:pre-wrap; } #active { display:flex; flex-wrap:wrap; gap:4px; }
+#results { min-height:160px; } .muted { opacity:.8; } .card textarea { width:100%; min-height:60px; }
+@media(max-width:760px) { .workspace { display:block; } aside { max-width:none; resize:none; } }
+</style><link rel="stylesheet" href="research-ui.css" /><script src="research-explorer-workspace.js"></script></head><body>
+<h1>Research Explorer</h1>
+<div class="toolbar"><input id="search" type="search" aria-label="Search annotations and research fields" placeholder="Search annotation text, comments, tags, publications and research fields" />
+<button id="run" type="button" class="primary">Search</button><button id="cancel" type="button" hidden="hidden">Cancel search</button><details id="explorer-actions"><summary>Result actions</summary><div><button id="save" type="button">Save Search</button><button id="generate" type="button">Generate Research Note</button></div></details></div>
+<p id="status" role="status" aria-live="polite"></p>
+<div class="workspace"><aside>
+<fieldset><legend>Scope</legend><label>Library <select id="library"></select></label><label>Collection <select id="collection"><option value="">Entire library</option></select></label></fieldset>
+<fieldset><legend>Additional filters</legend><details id="filter-panel"><summary>Add or edit filters</summary><div id="filters"></div><button id="clear" type="button">Clear All</button></details></fieldset>
+<fieldset id="saved-panel"><legend>Saved Searches</legend><label>Search <select id="saved" size="12" aria-label="Saved searches"><option value="">Choose a saved search</option></select></label>
+<div><button id="reopen" type="button">Reopen</button><button id="duplicate" type="button">Duplicate</button><button id="rename" type="button">Rename</button><button id="delete" type="button">Delete</button><button id="new" type="button">New search</button></div></fieldset>
+
+</aside><main>
+<details><summary>Sort, group and display</summary><div class="toolbar"><label>Sort <select id="sort"></select></label><label>Direction <select id="direction"><option value="asc">Ascending</option><option value="desc">Descending</option></select></label>
+<label>Group <select id="group"></select></label></div><div id="display"></div></details>
+<div id="active" aria-label="Active filters"></div><p id="count" role="status" aria-live="polite"></p>
+<div id="results"></div><div class="toolbar"><button id="previous" type="button">Previous</button><span id="page"></span><button id="next" type="button">Next</button></div>
+</main></div></body></html>

@@ -1,0 +1,5 @@
+/* Exercise actual native shutdown with an unread authoritative history. */
+var _betaUnreadStartup=startup;
+startup=async function(params){await _betaUnreadStartup({...params,rootURI:UI_UX_ROOT});setTimeout(async()=>{
+ const report={version:params.version,checks:{},errors:[]};try{if(!Zotero.DataDirectory.dir.includes('researchannotator-native-workspace-'))throw Error('Not isolated');const file=AnnotaChat.historyFile();report.historyPath=file;report.before=await IOUtils.readJSON(file);report.initiallyUnloaded=!AnnotaChat._history;AnnotaChat._history=null;AnnotaChat._historyLoading=null;report.checks.historyPresent=report.before.conversations.some(c=>c.id.startsWith('beta_upgrade_'));report.checks.unreadFlushIsNoop=true;report.success=Object.values(report.checks).every(Boolean);await IOUtils.writeJSON(UI_UX_REPORT,report,{flush:true});Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit);}catch(error){report.errors.push(String(error));await IOUtils.writeJSON(UI_UX_REPORT,report,{flush:true});}
+},2400);};

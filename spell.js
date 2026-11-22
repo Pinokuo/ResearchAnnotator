@@ -1,25 +1,25 @@
 /* eslint-disable no-undef */
-// Annota — orthographe et grammaire par le correcteur de macOS.
+// Spelling and grammar through the macOS spelling service.
 //
-// Moteur : NSSpellChecker, celui de Pages, Mail ou TextEdit, interrogé par
-// osascript en JavaScript (JXA), comme Ariane le fait pour Rappels et Agenda.
-// Rien à installer ni à compiler, aucune clé : tout reste sur le Mac.
+// Use NSSpellChecker, also used by Pages, Mail and TextEdit,
+// through JavaScript for Automation via osascript.
+// No installation, compilation or API key; processing stays on the Mac.
 //
-// Les commentaires d'annotation et les notes contiennent du balisage (<b>,
-// <i>, paragraphes, entités). Seul le texte visible est vérifié ; une table
-// de correspondance ramène chaque faute à sa place dans la chaîne d'origine,
-// si bien qu'une correction ne touche jamais au balisage.
+// Comments and notes contain markup and entities. Check only visible
+// text, mapping each issue back to its original string position,
+// so a correction cannot accidentally modify markup.
+// The correction view displays proposed changes separately.
 //
-// La revue s'affiche dans le panneau Annota (vue « Correction ») ; chaque
-// correction acceptée est enregistrée aussitôt dans l'item.
+// Accepted corrections are saved immediately to the target item.
+// Keep review actions in the existing Chat correction presentation.
 
 var AnnotaSpell = {
 	OSASCRIPT: "/usr/bin/osascript",
 
-	// Script JXA. Arguments : « check » <textes en JSON> <langue> <grammaire 0/1>,
-	// ou « learn » <mot>. Renvoie du JSON sur la sortie standard.
-	// NB : on ne lit aucun paramètre de sortie NSError** (Ariane a constaté
-	// qu'osascript s'y plante) ; orthography et wordCount sont passés à nil.
+	// JXA script. Arguments: "check" <JSON texts> <language> <grammar 0/1>,
+	// or "learn" <word>. Returns JSON on standard output.
+	// Do not read NSError** output parameters because that can crash
+	// osascript; pass nil for orthography and wordCount.
 	JXA: [
 		"ObjC.import('AppKit');",
 		"function issuesFor(sc, tag, text, grammar) {",
@@ -75,18 +75,18 @@ var AnnotaSpell = {
 		"}"
 	].join("\n"),
 
-	// Balises après lesquelles le texte visible passe à la ligne : sans cela,
-	// deux paragraphes collés formeraient des mots ou des phrases fautifs.
+	// Insert visible line breaks after block tags to avoid joining
+	// paragraphs into erroneous words or sentences.
 	BLOCK_TAGS: /^(p|div|h[1-6]|li|ul|ol|br|blockquote|tr|td|th|pre|table|hr)$/i,
 
 	ENTITIES: { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " },
 
-	// Éléments de Zotero dans une note (citation, passage surligné ou
-	// souligné, formule) : leur texte vient de la source, pas de l'auteur de
-	// la note. Ni vérifié ni corrigé ; remplacé par une espace virtuelle.
+	// Zotero source elements such as citations, highlighted/underlined text
+	// and formulas belong to the source, not the note author.
+	// Do not check or correct them; represent them with a virtual space.
 	OPAQUE: /^<span\b(?=[^>]*\bclass="[^"]*\b(?:citation|highlight|underline|math)\b)[^>]*>/i,
 
-	// Indice qui suit le </span> fermant le span ouvert juste avant « from ».
+	// Index after the closing span matching the opening span before from.
 	spanEnd(raw, from) {
 		let re = /<span\b[^>]*>|<\/span>/gi;
 		re.lastIndex = from;
@@ -102,12 +102,12 @@ var AnnotaSpell = {
 		try { return !!Zotero.isMac; } catch (e) { return false; }
 	},
 
-	// ---- Texte visible ↔ chaîne d'origine ----
+	// Map visible text to original content.
 
-	// starts[i] / ends[i] : position, dans la chaîne d'origine, du caractère
-	// visible i. virt[i] : saut de ligne ajouté pour une balise de bloc, ou
-	// espace tenant lieu d'un élément opaque (il n'existe pas dans
-	// l'original ; une correction ne peut pas le traverser).
+	// starts[i]/ends[i] map a visible character to its original-string
+	// position. virt[i] marks added block breaks or spaces representing
+	// opaque elements. These characters do not exist in the original,
+	// and a correction must not cross them.
 	visible(raw) {
 		raw = String(raw || "");
 		let text = "", starts = [], ends = [], virt = [];
@@ -157,7 +157,7 @@ var AnnotaSpell = {
 			push(c, i, i + 1, false);
 			i++;
 		}
-		// Le saut ajouté par la dernière balise fermante ne sépare plus rien.
+		// The final block's added newline no longer separates any content.
 		while (virt.length && virt[virt.length - 1]) {
 			virt.pop(); starts.pop(); ends.pop();
 			text = text.slice(0, -1);
@@ -165,8 +165,8 @@ var AnnotaSpell = {
 		return { text, starts, ends, virt };
 	},
 
-	// Plage visible [a, b) → plage d'origine, ou null si elle traverse un saut
-	// de ligne ajouté.
+	// Visible range [a, b) maps to the original range, or null across a break
+	// An added line break.
 	rawRange(vis, a, b) {
 		if (a < 0 || b > vis.text.length || b <= a) return null;
 		for (let k = a; k < b; k++) if (vis.virt[k]) return null;
@@ -207,8 +207,8 @@ var AnnotaSpell = {
 		return l === "auto" ? "" : l;
 	},
 
-	// Fautes de chaque texte, par lots (la ligne de commande a une taille
-	// maximale). Positions en unités UTF-16, comme les chaînes JavaScript.
+	// Batch text checking to stay within command-line length limits.
+	// Positions use UTF-16 units, matching JavaScript strings.
 	async check(texts) {
 		let grammar = getPref("spellGrammar", true) !== false;
 		let out = [], batch = [], size = 0;
@@ -233,9 +233,9 @@ var AnnotaSpell = {
 		await this.osascript(["learn", word]);
 	},
 
-	// Fautes brutes du moteur → fautes situées dans le texte visible. Pour la
-	// grammaire, Apple donne la plage du détail relativement à la phrase ; un
-	// détail qui sortirait du texte est rapporté à la phrase entière.
+	// Map raw service issues to visible-text positions. Grammar detail
+	// offsets are relative to a sentence; if they fall outside the
+	// text, report the complete sentence range instead.
 	normalize(text, issues) {
 		let out = [];
 		for (let x of issues || []) {
@@ -252,8 +252,8 @@ var AnnotaSpell = {
 				message: String(x.message || ""), suggestions, state: "open" });
 		}
 		out.sort((a, b) => a.start - b.start);
-		// Une faute d'orthographe et une remarque de grammaire sur le même mot :
-		// on garde l'orthographe, plus précise.
+		// For overlapping spelling and grammar issues on one word,
+		// prefer the more precise spelling issue.
 		return out.filter((x, i) => !out.some((y, j) => j !== i && y.type === "spelling"
 			&& x.type === "grammar" && y.start === x.start && y.length === x.length));
 	},
@@ -277,12 +277,12 @@ var AnnotaSpell = {
 					title: (item.getNoteTitle && item.getNoteTitle()) || "" };
 			}
 		}
-		catch (e) { log("orthographe, cible : " + e); }
+		catch (e) { log("Spelling target: " + e); }
 		return null;
 	},
 
-	// Sélection de la bibliothèque : annotations des pièces jointes, notes
-	// filles et notes sélectionnées.
+	// For library selections, include attachment annotations, publication
+	// child notes and directly selected notes.
 	async targetsFromSelection(items) {
 		let out = [], seen = new Set();
 		let add = (it) => {
@@ -299,24 +299,24 @@ var AnnotaSpell = {
 					for (let id of it.getNotes()) add(Zotero.Items.get(id));
 				}
 			}
-			catch (e) { log("orthographe, sélection : " + e); }
+			catch (e) { log("Spelling selection: " + e); }
 		}
 		for (let ann of await Annota.collectAnnotations(items)) add(ann);
 		return out;
 	},
 
-	// ---- Session de revue ----
+	// ---- Review session ----
 
-	// Lance la vérification et ouvre la vue de correction du panneau.
+	// Run checking and open the existing correction view.
 	async review(win, targets) {
 		if (!this.available()) {
-			toast("Annota", Annota.t("sp.mac"), "error");
+			toast("ResearchAnnotator", Annota.t("sp.mac"), "error");
 			return;
 		}
 		if (!AnnotaChat) return;
 		targets = (targets || []).filter(Boolean);
 		if (!targets.length) {
-			toast("Annota", Annota.t("sp.none"));
+			toast("ResearchAnnotator", Annota.t("sp.none"));
 			return;
 		}
 		AnnotaChat.toggle(win, true);
@@ -330,7 +330,7 @@ var AnnotaSpell = {
 		try {
 			for (let t of targets) t.vis = this.visible(t.raw);
 			let res = await this.check(targets.map(t => t.vis.text));
-			// Une faute qui chevauche un saut ou une citation n'est pas corrigeable.
+			// An issue crossing a virtual break or citation cannot be safely corrected.
 			targets.forEach((t, k) => {
 				t.issues = this.normalize(t.vis.text, res[k])
 					.filter(x => this.rawRange(t.vis, x.start, x.start + x.length));
@@ -338,7 +338,7 @@ var AnnotaSpell = {
 		}
 		catch (e) {
 			session.error = String(e.message || e);
-			log("orthographe : " + session.error);
+			log("Spelling: " + session.error);
 		}
 		session.busy = false;
 		if (inst.spell === session) AnnotaChat.renderInstance(inst);
@@ -358,11 +358,11 @@ var AnnotaSpell = {
 		return t.kind === "annotation" ? String(it.annotationComment || "") : String(it.getNote() || "");
 	},
 
-	// Applique un remplacement à une faute, enregistre, puis recale les
-	// positions des fautes suivantes du même texte.
+	// Apply a replacement, save it, then adjust later issue offsets
+	// within the same text.
 	async apply(t, issue, replacement) {
 		if (this.current(t) !== t.raw) {
-			// Modifié ailleurs entre-temps : on ne réécrit pas à l'aveugle.
+			// Do not overwrite text that was modified elsewhere in the meantime.
 			throw new Error(Annota.t("sp.err.changed"));
 		}
 		let r = this.rawRange(t.vis, issue.start, issue.start + issue.length);
@@ -382,20 +382,20 @@ var AnnotaSpell = {
 		t.vis = this.visible(raw);
 	},
 
-	// Première suggestion de chaque faute qui en a une, texte par texte.
+	// Use the first suggestion for each issue, processing one text at a time.
 	async applyAll(session) {
 		let n = 0, failed = 0;
 		for (let t of session.targets) {
 			for (let x of (t.issues || []).slice()) {
 				if (x.state !== "open" || !x.suggestions.length) continue;
 				try { await this.apply(t, x, x.suggestions[0]); n++; }
-				catch (e) { failed++; log("orthographe : " + e); }
+				catch (e) { failed++; log("Spelling: " + e); }
 			}
 		}
 		return { n, failed };
 	},
 
-	// ---- Vue « Correction » du panneau ----
+	// ---- Sidebar correction view ----
 
 	render(inst) {
 		let C = AnnotaChat, doc = inst.doc, s = inst.spell;
@@ -442,7 +442,7 @@ var AnnotaSpell = {
 			let all = C.button(doc, Annota.t("sp.all"), "annota-launch annota-spell-all", async () => {
 				all.disabled = true;
 				let r = await this.applyAll(s);
-				if (r.failed) toast("Annota", Annota.t("sp.err.some", { n: r.failed }), "error");
+				if (r.failed) toast("ResearchAnnotator", Annota.t("sp.err.some", { n: r.failed }), "error");
 				C.renderInstance(inst);
 			});
 			all.setAttribute("title", Annota.t("sp.all.title"));
@@ -481,12 +481,12 @@ var AnnotaSpell = {
 		return card;
 	},
 
-	// Extrait autour de la faute, la faute marquée.
+	// Display a surrounding excerpt with the issue marked.
 	context(text, start, length) {
 		let a = Math.max(0, start - 45), b = Math.min(text.length, start + length + 45);
 		let before = text.slice(a, start), after = text.slice(start + length, b);
 		before = before.slice(Math.max(0, before.lastIndexOf("\n") + 1));
-		// Extrait coupé : on repart au mot suivant plutôt qu'au milieu d'un mot.
+		// If the excerpt starts mid-word, advance to the next whole word.
 		if (a > 0 && !text.slice(a, start).includes("\n")) {
 			let sp = before.search(/\s/);
 			if (sp >= 0 && sp < before.length - 1) before = before.slice(sp + 1);
@@ -532,7 +532,7 @@ var AnnotaSpell = {
 		for (let sug of x.suggestions) {
 			acts.appendChild(C.button(doc, sug, "annota-spell-sug", async () => {
 				try { await this.apply(t, x, sug); }
-				catch (e) { toast("Annota", String(e.message || e), "error"); }
+				catch (e) { toast("ResearchAnnotator", String(e.message || e), "error"); }
 				C.renderInstance(inst);
 			}, Annota.t("sp.replace", { w: sug })));
 		}
@@ -547,14 +547,14 @@ var AnnotaSpell = {
 			acts.appendChild(C.button(doc, Annota.t("sp.learn"), "annota-link-btn annota-spell-ign", async () => {
 				try {
 					await this.learn(x.word);
-					// Le mot appris disparaît partout dans la revue.
+					// Learning a word removes its issues throughout the current review.
 					for (let tt of inst.spell.targets) {
 						for (let y of tt.issues || []) {
 							if (y.type === "spelling" && y.word === x.word && y.state === "open") y.state = "ignored";
 						}
 					}
 				}
-				catch (e) { toast("Annota", String(e.message || e), "error"); }
+				catch (e) { toast("ResearchAnnotator", String(e.message || e), "error"); }
 				C.renderInstance(inst);
 			}, Annota.t("sp.learn.title")));
 		}
@@ -562,19 +562,19 @@ var AnnotaSpell = {
 		return row;
 	},
 
-	// Montre l'annotation dans son PDF, s'il est ouvert ou ouvrable.
+	// Navigate to the annotation's PDF when available.
 	reveal(t) {
 		try {
 			let ann = Zotero.Items.get(t.id);
 			let att = ann && ann.parentItem;
 			if (!att) return;
 			Zotero.Reader.open(att.id, { annotationID: ann.key })
-				.catch(e => log("orthographe, ouverture : " + e));
+				.catch(e => log("Open spelling review: " + e));
 		}
-		catch (e) { log("orthographe, ouverture : " + e); }
+		catch (e) { log("Open spelling review: " + e); }
 	},
 
-	// Styles de la vue, ajoutés à ceux du panneau.
+	// Correction-view styles extend the shared Chat styles.
 	CSS: `
 .annota-spell { display: flex; flex-direction: column; gap: 10px; }
 .annota-spell-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

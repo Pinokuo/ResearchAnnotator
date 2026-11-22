@@ -1,25 +1,25 @@
 /* eslint-disable no-undef */
-// Annota : d'une citation de note à son surlignage.
+// Navigate from a note citation to its original highlight.
 //
-// Glisser un surlignage dans une note avec le gabarit « {{citation}} » seul
-// donne « (Valkokari, 2015, p. 17) ». Zotero n'y garde que la source et la
-// page : « Aller à la page » ouvre la bonne page, pas le passage, et rien du
-// tout pour un EPUB sans numéro de page. Ce module :
+// Dragging a highlight with a citation-only template can lose passage
+// produces "(Valkokari, 2015, p. 17)". Zotero retains only the source and
+// navigation: page navigation opens a page, not the original passage,
+// and an EPUB may not have page numbers. This module:
 //
-//  1. inscrit dans la citation, au moment du dépôt, la clé du surlignage
-//     (citationItems[0].annotationKey et annotationURI). Ariane s'en sert
-//     pour faire pointer la citation vers la note d'annotation du coffre ;
-//  2. fait ouvrir le surlignage lui-même par « Aller à la page » : encadré
-//     comme après un clic, et montré dans le panneau des annotations ;
-//  3. ajoute au menu de la citation un bouton « Ouvrir l'annotation », qui
-//     sert aussi quand Zotero ne propose pas « Aller à la page ».
+// stores the annotation key when a citation is dropped,
+// (citationItems[0].annotationKey and annotationURI). Ariane uses these
+// linking it to the original annotation identity;
+// opens and selects that highlight through the native reader,
+// including its temporary outline and sidebar selection;
+// 3. adds an "Open annotation" action to the citation menu, which
+// and provides an action when native page navigation is unavailable.
 //
-// Une citation déposée avant ce module n'a pas de clé : on retient alors le
-// surlignage de la source à cette page, s'il est le seul.
+// For historical citations without annotation keys, use a source-page
+// highlight only when exactly one candidate exists.
 //
-// Tout repose sur des fonctions internes de Zotero (sérialisation des
-// annotations, messages de l'éditeur de notes, lecteur). Chaque point
-// d'accroche est protégé : s'il disparaît, Zotero retrouve son comportement.
+// These integrations depend on Zotero serialization, note-editor
+// messages and reader internals. Guard every hook so native behavior
+// continues if an integration point becomes unavailable.
 
 var AnnotaCiteLink = {
 	_patched: null,
@@ -29,7 +29,7 @@ var AnnotaCiteLink = {
 		let EI = Zotero.EditorInstance;
 		if (!U || typeof U.serializeAnnotations !== "function" || !EI || !EI.prototype
 			|| typeof EI.prototype.init !== "function") {
-			throw new Error("éditeur de notes de Zotero introuvable");
+			throw new Error("Zotero note editor unavailable");
 		}
 		let self = this;
 
@@ -39,40 +39,40 @@ var AnnotaCiteLink = {
 				return self.serializeTagged(origSerialize, this, annotations, skipEmbeddingItemData);
 			}
 			catch (e) {
-				log("citations : clé du surlignage non inscrite : " + e);
+				log("Citations: annotation key not attached: " + e);
 				return origSerialize.call(this, annotations, skipEmbeddingItemData);
 			}
 		};
 
-		// Le gestionnaire de messages de l'éditeur est enregistré pendant
-		// init() puis retiré par uninit() sous le même nom : le remplacer
-		// AVANT init suffit pour que Zotero pose et retire lui-même le nôtre.
+		// The note editor registers and removes its message handler by the
+		// same name. Replacing it before init lets Zotero manage the
+		// replacement's registration and cleanup correctly.
 		let origInit = EI.prototype.init;
 		EI.prototype.init = function () {
 			try { self.wrapHandler(this); }
-			catch (e) { log("citations : éditeur non intercepté : " + e); }
+			catch (e) { log("Citations: editor hook unavailable: " + e); }
 			return origInit.apply(this, arguments);
 		};
 
 		this._patched = { U, origSerialize, EI, origInit };
 		try { this.wrapQuickCopy(); }
-		catch (e) { log("citations : glisser hors de Zotero non intercepté : " + e); }
+		catch (e) { log("Citations: external drag hook unavailable: " + e); }
 		for (let inst of this.instances()) {
 			try { this.adopt(inst); }
-			catch (e) { log("citations : éditeur ouvert non intercepté : " + e); }
+			catch (e) { log("Citations: existing-editor hook unavailable: " + e); }
 		}
 	},
 
 	stop() {
 		for (let inst of this.instances()) {
 			try { this.release(inst); }
-			catch (e) { /* éditeur déjà fermé */ }
+			catch (e) { /* The editor has already closed. */ }
 		}
 		let p = this._patched;
 		if (p) {
-			// Notre version est une propriété propre de l'instance unique ; la
-			// méthode d'origine vit sur sa classe. Retirer la nôtre suffit,
-			// sinon on remet l'originale en place.
+			// Our override is an own property; the original method remains on
+			// the class, so deleting the override restores native behavior.
+			// otherwise restore the original.
 			delete p.U.serializeAnnotations;
 			if (p.U.serializeAnnotations !== p.origSerialize) {
 				p.U.serializeAnnotations = p.origSerialize;
@@ -82,37 +82,37 @@ var AnnotaCiteLink = {
 		this._patched = null;
 		if (this._quickCopy) {
 			try { Zotero.QuickCopy.getContentFromItems = this._quickCopy; }
-			catch (e) { /* Zotero en cours d'arrêt */ }
+			catch (e) { /* Zotero is shutting down. */ }
 			this._quickCopy = null;
 		}
 	},
 
-	// ---- 5. Glisser ou copier un surlignage hors de Zotero ----
+	// ---- 5. Drag or copy a highlight outside Zotero ----
 	//
-	// Le lecteur traduit les surlignages glissés ou copiés en Markdown et en
-	// HTML, par une note temporaire (QuickCopy.annotationsToNote) qui passe
-	// par serializeAnnotations : ses citations portent donc la clé du
-	// surlignage. Les traducteurs « Note Markdown » et « Note HTML » n'en
-	// gardent rien et lient la citation à la référence (zotero://select/…).
-	// Avec le gabarit « {{citation}} » seul, plus rien ne désigne alors le
-	// surlignage. On réécrit donc, dans le texte produit, le lien de chaque
-	// citation vers son surlignage, dans la forme même de Zotero :
-	// zotero://open-pdf/…/items/PIÈCE?page=N&annotation=CLÉ. Le libellé ne
-	// change pas. Ariane, dans Obsidian, y lit la clé.
+	// Reader drag/copy serializes highlights through a temporary note
+	// and QuickCopy.annotationsToNote. serializeAnnotations retains the
+	// annotation key in that temporary HTML, but the native Markdown and
+	// HTML translators otherwise link citations only to publications.
+	// With a citation-only template that loses the highlight target.
+	// Rewrite each generated citation link to its corresponding highlight
+	// using Zotero's native open-pdf URL structure.
+	// Keep the visible citation label unchanged.
+	// The URL includes attachment key, page and annotation key.
+	// External compatible consumers can still read that stable key.
 
 	_quickCopy: null,
 
 	wrapQuickCopy() {
 		let QC = Zotero.QuickCopy;
 		if (!QC || typeof QC.getContentFromItems !== "function") {
-			throw new Error("QuickCopy.getContentFromItems introuvable");
+			throw new Error("QuickCopy.getContentFromItems unavailable");
 		}
 		let self = this;
 		let orig = QC.getContentFromItems;
 		QC.getContentFromItems = function (items, format, callback, modified) {
 			let links = null;
 			try { links = self.annotationLinksFor(items); }
-			catch (e) { log("citations : glisser : " + e); }
+			catch (e) { log("Citation drag: " + e); }
 			if (links && links.length && typeof callback === "function") {
 				let cb = callback;
 				callback = function (obj, worked) {
@@ -121,7 +121,7 @@ var AnnotaCiteLink = {
 							obj.string = self.rewriteLinks(obj.string, links);
 						}
 					}
-					catch (e) { log("citations : glisser : " + e); }
+					catch (e) { log("Citation drag: " + e); }
 					return cb.apply(this, arguments);
 				};
 			}
@@ -130,8 +130,8 @@ var AnnotaCiteLink = {
 		this._quickCopy = orig;
 	},
 
-	// Citations à clé d'une note temporaire de surlignages, dans l'ordre :
-	// [{ itemKey, href }]. null s'il ne s'agit pas d'une telle note.
+	// Read temporary-note annotation citations in order as
+	// [{ itemKey, href }], or return null for another kind of note.
 	annotationLinksFor(items) {
 		if (!Array.isArray(items) || items.length !== 1) return null;
 		let note = items[0];
@@ -152,8 +152,8 @@ var AnnotaCiteLink = {
 		return out.some(l => l.href) ? out : null;
 	},
 
-	// Lien d'ouverture d'un surlignage, construit comme le font les
-	// traducteurs de Zotero pour un passage cité.
+	// Build an annotation-opening URL in the same format as Zotero's
+	// cited-passage translators.
 	annotationOpenURI(ci) {
 		let ann = null;
 		try {
@@ -177,9 +177,9 @@ var AnnotaCiteLink = {
 		return href + (href.endsWith("?") ? "" : "&") + "annotation=" + ann.key;
 	},
 
-	// Remplace, dans l'ordre, le lien zotero://select de chaque citation par
-	// celui de son surlignage. Un lien qui ne correspond pas à la citation
-	// attendue (autre référence) est laissé tel quel.
+	// Replace citation select links in order, but retain any link whose
+	// publication does not match the expected citation.
+	// Do not rewrite unrelated user links.
 	rewriteLinks(text, links) {
 		let i = 0;
 		let src = String(text);
@@ -187,9 +187,9 @@ var AnnotaCiteLink = {
 			while (i < links.length && links[i].itemKey && links[i].itemKey !== key) i++;
 			let l = links[i++];
 			if (!l || !l.href) return m;
-			// Parenthèses encodées : un lien Markdown s'arrêterait à celle
-			// d'une position EPUB (epubcfi(…)). Dans un attribut HTML, le &
-			// s'écrit &amp;, comme Zotero le fait.
+			// Encode parentheses so Markdown links containing EPUB positions
+			// do not end at epubcfi parentheses. Encode ampersands in HTML
+			// attributes as Zotero does.
 			let href = l.href.replace(/\(/g, "%28").replace(/\)/g, "%29");
 			return /href="$/.test(src.slice(Math.max(0, at - 6), at)) ? href.replace(/&/g, "&amp;") : href;
 		});
@@ -200,11 +200,11 @@ var AnnotaCiteLink = {
 		catch (e) { return []; }
 	},
 
-	// ---- 1. La clé du surlignage dans la citation ----
+	// Store the annotation key in the citation.
 
-	// Sérialise chaque annotation à part : le HTML produit pour l'une ne peut
-	// alors porter que SA citation. Le résultat est identique à un appel
-	// groupé (Zotero concatène simplement), clé du surlignage en plus.
+	// Serialize annotations individually so each generated fragment
+	// can contain only its own citation. Zotero concatenates these,
+	// matching batch output while retaining annotation keys.
 	serializeTagged(orig, ctx, annotations, skipEmbeddingItemData) {
 		let html = "", citationItems = [];
 		for (let a of annotations || []) {
@@ -242,7 +242,7 @@ var AnnotaCiteLink = {
 		});
 	},
 
-	// ---- 2. « Aller à la page » ----
+	// Native Go to Page integration.
 
 	wrapHandler(inst) {
 		let orig = inst._messageHandler;
@@ -253,7 +253,7 @@ var AnnotaCiteLink = {
 				if (self.intercept(inst, e, orig)) return undefined;
 			}
 			catch (err) {
-				log("citations : " + err);
+				log("Citations: " + err);
 			}
 			return orig(e);
 		};
@@ -263,8 +263,8 @@ var AnnotaCiteLink = {
 		return wrapped;
 	},
 
-	// Éditeur déjà ouvert à l'activation : son gestionnaire est en place, on
-	// le remplace par le nôtre.
+	// For an editor already open at activation, replace its existing
+	// message handler with the guarded extension handler.
 	adopt(inst) {
 		let win = inst._iframeWindow;
 		let orig = inst._messageHandler;
@@ -288,8 +288,8 @@ var AnnotaCiteLink = {
 		}
 	},
 
-	// Vrai si le message est pris en charge ici. L'ouverture est asynchrone :
-	// si aucun surlignage n'est identifié, on rend la main à Zotero.
+	// Return true only for handled messages. Opening is asynchronous;
+	// if no unique highlight can be resolved, defer to Zotero.
 	intercept(inst, e, orig) {
 		if (!e || e.source !== inst._iframeWindow || !e.data
 			|| e.data.instanceID !== inst.instanceID) {
@@ -307,20 +307,20 @@ var AnnotaCiteLink = {
 		this.openCitation(msg.citation).then(done => {
 			if (!done) orig(e);
 		}, err => {
-			log("citations : ouverture du surlignage : " + err);
+			log("Open cited highlight: " + err);
 			orig(e);
 		});
 		return true;
 	},
 
-	// ---- 6. Dépôt d'un surlignage dans le texte d'une note ----
+	// Drop a highlight citation into note prose.
 	//
-	// Avec le gabarit « {{citation}} », Zotero insère un paragraphe : la
-	// citation part à la ligne. Un surlignage déposé seul dans un paragraphe
-	// non vide y est inséré dans la ligne ; déposé juste après le point final
-	// d'une phrase, il se place avant ce point, espace compris :
-	// « …composantes (Milliken, 1987, p. 136). ». Plusieurs surlignages, une
-	// ligne vide ou un autre gabarit gardent le comportement de Zotero.
+	// The citation-only template normally inserts a new paragraph.
+	// Insert a single citation inline into a nonempty paragraph instead;
+	// immediately after sentence punctuation, insert before that
+	// punctuation with appropriate spacing.
+	// Multiple highlights, empty paragraphs or other templates retain
+	// Zotero's native behavior.
 
 	interceptDrop(inst, e, orig, msg) {
 		let anns = null;
@@ -337,7 +337,7 @@ var AnnotaCiteLink = {
 			if (!html) return;
 			let plan = null;
 			try { plan = this.inlinePlan(this.editorView(inst), msg.pos, html); }
-			catch (err) { log("citations : dépôt dans la ligne : " + err); }
+			catch (err) { log("Citations: inline drop: " + err); }
 			if (!plan) {
 				inst._postMessage({ action: "insertHTML", pos: msg.pos, html });
 				return;
@@ -348,13 +348,13 @@ var AnnotaCiteLink = {
 			}
 			inst._postMessage({ action: "insertHTML", pos: plan.pos, html: plan.html });
 		})().catch(err => {
-			log("citations : dépôt : " + err);
+			log("Citations: drop: " + err);
 			orig(e);
 		});
 		return true;
 	},
 
-	// Vue ProseMirror de l'éditeur de notes (dans son cadre), ou null.
+	// ProseMirror note-editor view inside its frame, or null.
 	editorView(inst) {
 		try {
 			let w = inst._iframeWindow && inst._iframeWindow.wrappedJSObject;
@@ -364,15 +364,15 @@ var AnnotaCiteLink = {
 		catch (e) { return null; }
 	},
 
-	// Insertion dans la ligne : { html, pos, spaces, at }, ou null pour laisser
-	// faire Zotero. La citation ne doit pas être accompagnée d'autre chose
-	// (passage, commentaire) : sinon le paragraphe de Zotero reste de mise.
+	// Return inline insertion { html, pos, spaces, at }, or null
+	// to retain native behavior. If other passage/Comment content
+	// accompanies the citation, keep Zotero's paragraph insertion.
 	inlinePlan(view, pos, html) {
 		if (!view || !Number.isInteger(pos) || pos < 0) return null;
 		let m = String(html).trim().match(/^<p>([\s\S]*)<\/p>$/i);
 		if (!m || /<\/?(p|div|h\d|ul|ol|li|blockquote|table|pre)\b/i.test(m[1])) return null;
 		let inner = m[1].trim();
-		// Ce qui reste une fois les citations ôtées (spans imbriqués appariés).
+		// Remaining content after balanced nested citation spans are removed.
 		let rest = "", last = 0, found = 0, c;
 		let open = /<span\b(?=[^>]*\bclass="citation")[^>]*>/g;
 		while ((c = open.exec(inner)) !== null) {
@@ -393,7 +393,7 @@ var AnnotaCiteLink = {
 		let before = block.textBetween(0, $p.parentOffset, null, "\ufffc");
 		let after = block.textBetween($p.parentOffset, block.content.size, null, "\ufffc");
 		let at = pos;
-		// Juste après le point final : la citation passe avant lui.
+		// Move a citation inserted after final punctuation before that punctuation.
 		let dot = before.match(/(^|[^.])\.(\s*)$/);
 		if (dot) {
 			at = pos - 1 - dot[2].length;
@@ -418,7 +418,7 @@ var AnnotaCiteLink = {
 		return !!item && typeof item.isAnnotation === "function" && item.isAnnotation();
 	},
 
-	// Surlignage désigné par une citation, ou null.
+	// Annotation resolved by a citation, or null.
 	async annotationFor(ci) {
 		if (!ci) return null;
 		if (ci.annotationURI) {
@@ -426,7 +426,7 @@ var AnnotaCiteLink = {
 				let it = await Zotero.URI.getURIItem(String(ci.annotationURI));
 				if (this.isAnnotation(it)) return it;
 			}
-			catch (e) { /* surlignage supprimé ou bibliothèque absente */ }
+			catch (e) { /* The highlight was deleted or its library is unavailable. */ }
 		}
 		let source = null;
 		try { source = await Zotero.EditorInstance.getItemFromURIs(ci.uris || []); }
@@ -438,8 +438,8 @@ var AnnotaCiteLink = {
 			if (this.isAnnotation(it)) return it;
 		}
 
-		// Citation antérieure, sans clé : le surlignage de cette page, s'il
-		// est seul. Plusieurs candidats : on ne devine pas.
+		// For a historical citation without a key, accept a page match only
+		// when it is unique. Never guess among multiple highlights.
 		if (!ci.locator) return null;
 		let page = String(ci.locator).trim();
 		let atts = [];
@@ -451,7 +451,7 @@ var AnnotaCiteLink = {
 		}
 		let found = [];
 		for (let att of atts) {
-			if (typeof att.getAnnotations !== "function") continue;
+			if (!att?.isFileAttachment?.()) continue;
 			for (let a of att.getAnnotations()) {
 				if (!["highlight", "underline"].includes(a.annotationType)) continue;
 				if (String(a.annotationPageLabel || "").trim() === page) found.push(a);
@@ -481,14 +481,14 @@ var AnnotaCiteLink = {
 		return readers.find(r => r && r.itemID === attachmentID && !r._isTabClosed) || null;
 	},
 
-	// Ouvre le document sur le surlignage et le sélectionne : encadré dans la
-	// page, mis en avant dans le panneau des annotations, comme après un clic.
+	// Open the original document and select the highlight, producing
+	// the native outline and sidebar emphasis as after a normal click.
 	async showAnnotation(ann) {
 		let att = ann.parentItem;
 		if (!att) return;
 		let location = { annotationID: ann.key };
 		let reader = await Zotero.Reader.open(att.id, location);
-		// Onglet présent mais déchargé : Zotero le recharge sans rendre le lecteur.
+		// A suspended reader tab may reload without returning a reader immediately.
 		reader = reader || await this._waitFor(() => this.readerFor(att.id), 10000);
 		if (!reader) return;
 		try { await reader._initPromise; }
@@ -496,8 +496,8 @@ var AnnotaCiteLink = {
 		let ir = reader._internalReader;
 		if (!ir) return;
 
-		// Les annotations arrivent après l'ouverture : attendre la nôtre. Le
-		// tableau appartient au lecteur, on le parcourt sans lui passer de
+		// Wait for the target annotation after reader opening; inspect its
+		// cross-compartment array without passing extension objects into it.
 		// fonction.
 		let loaded = await this._waitFor(() => {
 			let list = ir._state && ir._state.annotations;
@@ -519,13 +519,13 @@ var AnnotaCiteLink = {
 				Components.utils.cloneInto([ann.key], reader._iframeWindow), false);
 		}
 		catch (e) {
-			log("citations : sélection du surlignage : " + e);
+			log("Citations: highlight selection: " + e);
 			try { reader.navigate(location); }
-			catch (e2) { /* lecteur fermé entre-temps */ }
+			catch (e2) { /* The reader closed during navigation. */ }
 		}
 	},
 
-	// ---- 3. Bouton « Ouvrir l'annotation » ----
+	// ---- 3. Open annotation button ----
 
 	watchPopups(inst) {
 		this.unwatchPopups(inst);
@@ -539,7 +539,7 @@ var AnnotaCiteLink = {
 			win.requestAnimationFrame(() => {
 				pending = false;
 				try { this.decoratePopup(inst); }
-				catch (e) { log("citations : menu de la citation : " + e); }
+				catch (e) { log("Citation menu: " + e); }
 			});
 		});
 		obs.observe(doc.body, { childList: true, subtree: true });
@@ -549,17 +549,17 @@ var AnnotaCiteLink = {
 	unwatchPopups(inst) {
 		if (inst._annotaPopupObserver) {
 			try { inst._annotaPopupObserver.disconnect(); }
-			catch (e) { /* fenêtre fermée */ }
+			catch (e) { /* The window has closed. */ }
 		}
 		inst._annotaPopupObserver = null;
 		try {
 			let doc = inst._iframeWindow && inst._iframeWindow.document;
 			if (doc) for (let b of doc.querySelectorAll(".annota-open-annotation")) b.remove();
 		}
-		catch (e) { /* fenêtre fermée */ }
+		catch (e) { /* The window has closed. */ }
 	},
 
-	// Citation sélectionnée dans la note (celle dont le menu est ouvert).
+	// Citation selected in the note whose context menu is open.
 	selectedCitation(doc) {
 		let el = doc.querySelector(".citation.ProseMirror-selectednode")
 			|| doc.querySelector(".ProseMirror-selectednode .citation");
@@ -579,7 +579,7 @@ var AnnotaCiteLink = {
 		popup._annotaPending = true;
 		this.annotationFor(ci).then(ann => {
 			popup._annotaPending = false;
-			// Menu refermé, ou citation changée pendant la recherche.
+			// The menu closed or citation changed while resolving it.
 			if (!ann || !popup.isConnected || popup.querySelector(".annota-open-annotation")) return;
 			let now = this.selectedCitation(doc);
 			let nci = now && now.citationItems && now.citationItems[0];
@@ -603,7 +603,7 @@ var AnnotaCiteLink = {
 		svg.setAttribute("height", "16");
 		svg.setAttribute("viewBox", "0 0 16 16");
 		svg.setAttribute("fill", "none");
-		// Marqueur de surlignage : un trait épais sous trois lignes de texte.
+		// Highlight icon: an emphasized underline beneath three text lines.
 		let paths = [
 			["M2 3h12", "1"], ["M2 6.5h12", "1"], ["M2 10.5h8", "3.5"]
 		];
@@ -625,7 +625,7 @@ var AnnotaCiteLink = {
 		b.addEventListener("click", e => {
 			e.preventDefault();
 			e.stopPropagation();
-			this.showAnnotation(ann).catch(err => log("citations : " + err));
+			this.showAnnotation(ann).catch(err => log("Citations: " + err));
 		});
 		return b;
 	},
@@ -636,24 +636,24 @@ var AnnotaCiteLink = {
 		return key === "cite.open" ? "Open annotation" : key;
 	},
 
-	// ---- 4. Notes déjà écrites : le surlignage réduit à sa citation ----
+	// Historical notes: reduce a dragged highlight to its citation.
 	//
-	// Avec l'ancien gabarit, un surlignage glissé dans une note y déposait
+	// Older drag templates inserted a passage, citation and Comment together.
 	// « <span class="highlight" data-annotation=…>« passage »</span>
 	// <span class="citation" …>(Auteur, 2015, p. 18)</span> commentaire ».
-	// Le passage et le commentaire vivent déjà dans l'annotation : le trio
-	// devient la seule citation, portant la clé du surlignage comme au dépôt
-	// (annotationKey, annotationURI), pour « Aller à la page » et « Ouvrir
-	// l'annotation ». Le texte qui suit la citation n'est retiré que s'il est
-	// le commentaire du surlignage, ou une version antérieure que le
-	// commentaire actuel contient : une phrase ajoutée à la main reste.
-	// Un surlignage supprimé depuis n'est pas touché : son passage n'existe
-	// plus que dans la note.
+	// The passage and Comment already belong to the original annotation;
+	// reduce the duplicated trio to its keyed citation for native
+	// Go to Page and Open Annotation actions.
+	// Remove following text only if it matches the original Comment or
+	// an earlier version contained in the current Comment.
+	// Preserve any independently authored sentence.
+	// Do not alter a deleted highlight's historical note text;
+	// the note may contain the only surviving copy of its passage.
 
 	_HL_OPEN: /<span\b(?=[^>]*\bclass="highlight")[^>]*\bdata-annotation="([^"]*)"[^>]*>/g,
 	_CIT_OPEN: /^(?:\s|&nbsp;|\u00a0)*<span\b(?=[^>]*\bclass="citation")[^>]*>/,
 
-	// Indice qui suit le </span> fermant le span ouvert juste avant « from ».
+	// Index after the closing span paired with the opening span before from.
 	_endOfSpan(html, from) {
 		let re = /<span\b[^>]*>|<\/span>/g;
 		re.lastIndex = from;
@@ -665,8 +665,8 @@ var AnnotaCiteLink = {
 		return -1;
 	},
 
-	// Texte réduit à ses mots : balises, entités, accents, casse et blancs
-	// ne comptent pas (un commentaire a pu être reformaté ou corrigé).
+	// Compare words while ignoring tags, entities, accents, case and whitespace;
+	// historical Comments may have been reformatted or corrected.
 	_plain(s) {
 		return String(s || "")
 			.replace(/<br\s*\/?>/gi, " ")
@@ -681,7 +681,7 @@ var AnnotaCiteLink = {
 			.trim();
 	},
 
-	// Texte lisible d'un fragment de note, pour l'aperçu.
+	// Readable note-fragment text for the preview.
 	_display(s) {
 		return String(s || "")
 			.replace(/<br\s*\/?>/gi, " ")
@@ -693,7 +693,7 @@ var AnnotaCiteLink = {
 			.trim();
 	},
 
-	// Surlignages glissés présents dans une note : [{ key, attachmentURI }].
+	// Dragged highlights in a note: [{ key, attachmentURI }].
 	highlightsIn(html) {
 		let out = [], m;
 		let re = new RegExp(this._HL_OPEN.source, "g");
@@ -707,9 +707,9 @@ var AnnotaCiteLink = {
 		return out;
 	},
 
-	// Réduit une note. info(clé) rend { comment, uri } pour un surlignage
+	// Reduce a note using info(key) to resolve original Comment and URI.
 	// existant, null sinon. Renvoie { html, count, kept, examples } ; kept :
-	// les textes laissés après une citation, faute d'être le commentaire.
+	// Report text retained after a citation because it is not the annotation Comment.
 	reduceHTML(html, info) {
 		html = String(html || "");
 		let re = new RegExp(this._HL_OPEN.source, "g");
@@ -727,7 +727,7 @@ var AnnotaCiteLink = {
 			let citEnd = this._endOfSpan(html, hlEnd + mc[0].length);
 			if (citEnd < 0) { re.lastIndex = hlEnd; continue; }
 
-			// Fin du paragraphe : la première balise fermante de bloc.
+			// The paragraph ends at the first closing block tag.
 			let rest = html.slice(citEnd);
 			let close = rest.search(/<\/(?:p|li|h[1-6]|div|blockquote|td)>/i);
 			let parEnd = close < 0 ? html.length : citEnd + close;
@@ -766,7 +766,7 @@ var AnnotaCiteLink = {
 		});
 	},
 
-	// Surlignages d'une note encore présents dans Zotero : clé -> { comment, uri }.
+	// Map surviving Zotero highlights to their current Comment and URI.
 	async annotationsFor(html) {
 		let map = new Map();
 		for (let h of this.highlightsIn(html)) {
@@ -780,7 +780,7 @@ var AnnotaCiteLink = {
 		return map;
 	},
 
-	// Ce que la réduction changerait : [{ note, html, count, examples }].
+	// Preview changes as [{ note, html, count, examples }].
 	async plan(notes) {
 		let out = [];
 		for (let note of notes) {
@@ -794,8 +794,8 @@ var AnnotaCiteLink = {
 		return out;
 	},
 
-	// Notes visées par la sélection : les notes elles-mêmes, et les notes
-	// filles des documents sélectionnés.
+	// Target selected notes and child notes of selected
+	// publications.
 	notesOfSelection(window) {
 		let seen = new Set(), out = [];
 		let add = n => { if (n && !seen.has(n.id)) { seen.add(n.id); out.push(n); } };
@@ -816,7 +816,7 @@ var AnnotaCiteLink = {
 		return (await Zotero.Items.getAsync(ids)).filter(n => n && n.isNote && n.isNote());
 	},
 
-	// IOUtils et PathUtils : globaux dans Zotero ; à défaut, ceux de la fenêtre.
+	// Use Zotero's IOUtils/PathUtils globals, or the window's equivalents.
 	_io() {
 		let win = Zotero.getMainWindow && Zotero.getMainWindow();
 		return {
@@ -829,13 +829,13 @@ var AnnotaCiteLink = {
 		return this._io().Path.join(Zotero.DataDirectory.dir, "annota", "sauvegardes-notes");
 	},
 
-	// Montre ce qui changera, demande l'accord, garde les notes d'origine,
-	// puis écrit.
+	// Preview proposed changes, obtain confirmation and retain the originals
+	// before writing replacements.
 	async reduce(window, notes) {
 		let plan = await this.plan(notes);
 		let ps = Services.prompt;
 		if (!plan.length) {
-			ps.alert(window, "Annota", this.t("reduce.none"));
+			ps.alert(window, "ResearchAnnotator", this.t("reduce.none"));
 			return;
 		}
 		let hl = plan.reduce((n, p) => n + p.count, 0);
@@ -845,7 +845,7 @@ var AnnotaCiteLink = {
 			+ "\n\n" + this.t("reduce.before") + "\n" + cut(ex.before)
 			+ "\n\n" + this.t("reduce.after") + "\n" + cut(ex.after)
 			+ "\n\n" + this.t("reduce.backup");
-		if (!ps.confirm(window, "Annota", msg)) return;
+		if (!ps.confirm(window, "ResearchAnnotator", msg)) return;
 
 		let { IO, Path } = this._io();
 		let dir = this._backupDir();
@@ -865,13 +865,13 @@ var AnnotaCiteLink = {
 				done++;
 			}
 			catch (e) {
-				log("réduction de la note " + p.note.key + " : " + e);
+				log("Note reduction " + p.note.key + " : " + e);
 			}
 		}
-		toast("Annota", this.t("reduce.done", { notes: done, highlights: hl }));
+		toast("ResearchAnnotator", this.t("reduce.done", { notes: done, highlights: hl }));
 	},
 
-	// Rétablit les notes de la dernière réduction, sauf celles modifiées depuis.
+	// Restore the last reduction only where no subsequent edits conflict.
 	async undoLast(window) {
 		let ps = Services.prompt;
 		let { IO } = this._io();
@@ -880,12 +880,12 @@ var AnnotaCiteLink = {
 		try { files = (await IO.getChildren(dir)).filter(f => /reduction-.*\.json$/.test(f)).sort(); }
 		catch (e) { files = []; }
 		if (!files.length) {
-			ps.alert(window, "Annota", this.t("reduce.noundo"));
+			ps.alert(window, "ResearchAnnotator", this.t("reduce.noundo"));
 			return;
 		}
 		let file = files[files.length - 1];
 		let data = JSON.parse(await IO.readUTF8(file));
-		if (!ps.confirm(window, "Annota", this.t("reduce.undoconfirm", { notes: data.notes.length, date: data.date }))) return;
+		if (!ps.confirm(window, "ResearchAnnotator", this.t("reduce.undoconfirm", { notes: data.notes.length, date: data.date }))) return;
 		let restored = 0, skipped = 0;
 		for (let n of data.notes) {
 			let note = await Zotero.Items.getByLibraryAndKeyAsync(n.libraryID, n.key);
@@ -895,6 +895,6 @@ var AnnotaCiteLink = {
 			restored++;
 		}
 		await IO.move(file, file.replace(/\.json$/, ".annulee.json"));
-		ps.alert(window, "Annota", this.t("reduce.undone", { restored, skipped }));
+		ps.alert(window, "ResearchAnnotator", this.t("reduce.undone", { restored, skipped }));
 	}
 };

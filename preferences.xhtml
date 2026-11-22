@@ -1,39 +1,38 @@
 <vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
       xmlns:html="http://www.w3.org/1999/xhtml">
-<!--
-  Panneau de préférences Annota.
-
-  Tout est en HTML : la mise en page suit la largeur de la fenêtre (grilles
-  qui passent sur une colonne, champs à 100 %). Les éléments portant data-pref
-  sont liés à leur préférence par preferences.js (type conservé).
-
-  Textes : l'anglais figure ici ; data-i18n (contenu) et data-i18n-ph /
-  data-i18n-title (attributs) désignent la clé de i18n.js qui le remplace
-  dans une autre langue.
--->
+<!-- ResearchAnnotator preferences. Native HTML controls adapt to window width.
+data-pref bindings preserve preference types. English is the source language;
+data-i18n keys supply intentional localized content and attributes. -->
 <html:div id="annota-prefs" class="annota-prefs">
+  <html:header class="ra-settings-brand"><html:img id="researchannotator-settings-logo" alt="ResearchAnnotator logo" width="64" height="64"/><html:strong>ResearchAnnotator</html:strong></html:header>
 
   <html:div id="annota-tabs">
-  <html:div class="annota-segmented" role="tablist" aria-label="Annota settings">
+  <html:div class="annota-segmented" role="tablist" aria-label="ResearchAnnotator settings">
     <html:button id="annota-tab-colors" class="annota-tab" role="tab" data-pane="colors"
                  type="button" data-i18n="tab.colors">Colors</html:button>
     <html:button id="annota-tab-ai" class="annota-tab" role="tab" data-pane="ai"
                  type="button" data-i18n="tab.ai">AI</html:button>
     <html:button id="annota-tab-chat" class="annota-tab" role="tab" data-pane="chat"
                  type="button" data-i18n="tab.chat">Chat</html:button>
+    <html:button id="annota-tab-data" class="annota-tab" role="tab" data-pane="data" type="button">Data Management</html:button>
     <html:button id="annota-tab-general" class="annota-tab" role="tab" data-pane="general"
                  type="button" data-i18n="tab.general">General</html:button>
   </html:div>
   </html:div>
 
-  <!-- ============================ COULEURS ============================= -->
+  <!-- Color configuration -->
   <html:div id="annota-pane-colors" class="annota-pane" role="tabpanel">
 
     <html:p class="annota-lead" data-i18n="colors.lead">Each color has its own configuration, separately for highlights and for areas. A color left empty is ignored.</html:p>
     <html:div id="annota-idle-warning" class="annota-warn" hidden="hidden"
-              data-i18n="colors.idle">No color is configured: Annota is inactive.</html:div>
+              data-i18n="colors.idle">No color is configured: ResearchAnnotator is inactive.</html:div>
 
-    <html:section class="annota-card">
+    <html:section class="annota-card" id="annota-highlight-colors-section">
+      <html:h3 class="annota-card-title">Highlight Colors</html:h3>
+      <html:p class="annota-help">Expand a color to edit its fields and AI configuration. Drag the reorder handle, or focus it and use Arrow Up/Down. Archiving preserves history; permanent deletion is available only for unused colors.</html:p>
+      <html:div id="annota-palette-editor"/>
+      <html:div id="annota-palette-parking" hidden="hidden">
+        <html:div id="annota-color-config-panel">
       <html:div id="annota-kind" class="annota-seg" role="group" aria-label="Annotation type">
         <html:button type="button" class="annota-seg-btn" data-kind="text" aria-pressed="true"
                      data-i18n="colors.kind.text">Highlights</html:button>
@@ -41,7 +40,9 @@
                      data-i18n="colors.kind.image">Areas (images, tables)</html:button>
       </html:div>
       <html:p id="annota-kind-help" class="annota-help" hidden="hidden" data-i18n="colors.kind.image.help">Frame drawn around a figure, a table or part of a page. The model receives the text found inside the area (PDF open in the reader); the fields are shown in the annotation card.</html:p>
-      <html:div id="annota-swatches" role="radiogroup" aria-label="Color"/>
+
+          <html:div id="annota-swatches" role="radiogroup" aria-label="Color" hidden="hidden"/>
+      <html:details class="annota-details"><html:summary>Advanced popup heading</html:summary>
       <html:div class="annota-form">
         <html:span class="annota-field-label" data-i18n="colors.color">Color</html:span>
         <html:span id="annota-target-name" class="annota-target"/>
@@ -52,62 +53,17 @@
                       placeholder="e.g. Definition" data-i18n-ph="colors.name.ph"/>
           <html:span class="annota-help" data-i18n="colors.name.help">Optional. Displayed above the fields in the selection popup.</html:span>
         </html:div>
-        <html:label class="annota-field-label" for="annota-semantic-label">
-          Highlight meaning
-        </html:label>
-        <html:div class="annota-field-stack">
-          <html:input id="annota-semantic-label" type="text"
-                      class="annota-input annota-w-md"
-                      placeholder="e.g. Important, Disagree, Must cite"/>
-          <html:span class="annota-help">
-            Your personal meaning for this highlight color. Independent of AI settings.
-          </html:span>
-        </html:div>
-        <html:div class="annota-form">
-  <html:label class="annota-field-label" for="annota-color-label-layout">
-    Color label layout
-  </html:label>
+        <html:input id="annota-semantic-label" type="hidden"/>
 
-  <html:select id="annota-color-label-layout" class="annota-input annota-w-md">
-    <html:option value="wrap">Horizontal – wrap</html:option>
-    <html:option value="single">Horizontal – single row</html:option>
-    <html:option value="stack">Horizontal – stacked</html:option>
-    <html:option value="slanted">Slanted</html:option>
-  </html:select>
-</html:div>
-<html:div class="annota-form">
-  <html:label class="annota-field-label" for="annota-paper-note-sort">
-    Research note entry order
-  </html:label>
-  <html:select id="annota-paper-note-sort" class="annota-input annota-w-md">
-    <html:option value="pdf">PDF reading order</html:option>
-    <html:option value="color">Group by annotation color</html:option>
-  </html:select>
-  <html:span class="annota-help">
-    Applies when a PDF research note is next synchronized.
-  </html:span>
-</html:div>
-<html:div class="annota-color-tools">
-  <html:button id="annota-color-export" type="button" class="annota-button">
-    Export color labels
-  </html:button>
-
-  <html:button id="annota-color-import" type="button" class="annota-button">
-    Import color labels
-  </html:button>
-
-  <html:input id="annota-color-import-file" type="file"
-              accept=".json,application/json" hidden="hidden"/>
-
-  <html:span id="annota-color-tools-status"
-             class="annota-status" role="status"/>
-</html:div>
       </html:div>
-    </html:section>
+
+
+
+      </html:details>
     <html:section class="annota-card">
       <html:h3 class="annota-card-title"><html:span class="annota-num">1</html:span>
         <html:span data-i18n="fields.title">Fields</html:span></html:h3>
-      <html:p class="annota-help" data-i18n="fields.help">Entered when highlighting or in the annotation card, in the order of the comment. An empty field is filled by the model when a prompt is set.</html:p>
+      <html:p class="annota-help">Manual and AI fields are stored independently of native Comment. AI fields show their instruction editor when selected.</html:p>
       <html:div id="annota-fields-editor">
         <html:textarea id="annota-fields" rows="5" class="annota-input annota-code"
                        aria-label="Fields (text)"/>
@@ -116,44 +72,44 @@
       <html:details class="annota-details">
         <html:summary data-i18n="fields.ref">Types, formats and text syntax</html:summary>
         <html:div class="annota-details-body">
-          <html:p data-i18n="fields.ref.types"><html:b>Types</html:b>: <html:code>text</html:code> (default), <html:code>textarea</html:code>, <html:code>check</html:code>, <html:code>select</html:code> (comma-separated options), <html:code>ai</html:code> (written by the model from the instruction in the options column).</html:p>
+          <html:p data-i18n="fields.ref.types"><html:b>Types</html:b>: <html:code>text</html:code> (default), <html:code>textarea</html:code>, <html:code>check</html:code>, <html:code>select</html:code> (comma-separated options), <html:code>multiselect</html:code> (searchable multiple values), <html:code>ai</html:code> (written by the model from the instruction in the options column).</html:p>
           <html:p data-i18n="fields.ref.formats"><html:b>Formats</html:b>: <html:code>bold</html:code>, <html:code>italic</html:code>, <html:code>bolditalic</html:code>, <html:code>underline</html:code>, <html:code>plain</html:code> (default). Text syntax, one field per line: <html:code>name | Label | type | options | format</html:code>. Without options, the format may be given in the fourth column.</html:p>
-          <html:pre>titre      | Titre      | text     | bold
+          <html:pre>heading | Heading | text | bold
 paraphrase | Paraphrase | textarea
-reference  | Référence  | text     | italic
-resume     | Résumé     | ai       | Résume le passage en une phrase. | italic</html:pre>
-          <html:p data-i18n="fields.ref.vars">The comment has one line per field, in order and in its format. Each field is also a variable (<html:code>{{name}}</html:code>) usable in the prompt and the layout.</html:p>
+reference | Reference | text | italic
+summary | Summary | ai | Summarize the passage in one sentence. | italic</html:pre>
+          <html:p data-i18n="fields.ref.vars">Structured values are stored separately from native Comment. Each field is also a variable (<html:code>{{name}}</html:code>) usable in the prompt and the layout.</html:p>
         </html:div>
       </html:details>
     </html:section>
 
-    <html:section class="annota-card">
-      <html:h3 class="annota-card-title"><html:span class="annota-num">2</html:span>
-        <html:span data-i18n="trigger.title">Trigger</html:span></html:h3>
+    <html:section id="annota-ai-trigger-section" class="annota-card" hidden="hidden">
+      <html:h3 class="annota-card-title">AI Generation Trigger</html:h3>
       <html:div class="annota-choices" role="radiogroup">
         <html:label class="annota-check">
           <html:input type="radio" name="annota-trigger" value="auto"/>
-          <html:span data-i18n="trigger.auto">When the annotation is created</html:span>
+          <html:span>Automatic</html:span>
         </html:label>
         <html:label class="annota-check">
           <html:input type="radio" name="annota-trigger" value="manual"/>
-          <html:span data-i18n="trigger.manual">On request only (context menu, or when fields are filled in)</html:span>
+          <html:span>Manual</html:span>
         </html:label>
       </html:div>
     </html:section>
 
+    <html:details class="annota-details"><html:summary>Advanced legacy prompt and layout</html:summary>
     <html:section class="annota-card">
       <html:h3 class="annota-card-title"><html:span class="annota-num">3</html:span>
         <html:span data-i18n="prompt.title">Prompt</html:span>
         <html:span class="annota-optional" data-i18n="optional">optional</html:span></html:h3>
-      <html:p class="annota-help" data-i18n="prompt.help">Without a prompt, the comment is built from the fields alone. With fields, the model fills only the empty ones; entered values are never rewritten. When every field is filled, no request is sent.</html:p>
+      <html:p class="annota-help">Retained for imported configurations and the explicit AI response field. Prefer an instruction on each Written by AI field. AI requests use the shared explicit generation controls.</html:p>
       <html:textarea id="annota-prompt" rows="8" class="annota-input annota-code"
                      aria-label="Prompt" placeholder="Empty: highlights of this color are not sent to the model." data-i18n-ph="prompt.ph"/>
 
       <html:details class="annota-details">
         <html:summary data-i18n="layout.title">Custom layout</html:summary>
         <html:div class="annota-details-body">
-          <html:p data-i18n="layout.help">Optional. By default, the comment has one line per field. A layout combines fields, adds fixed text, or inserts <html:code>{{ai}}</html:code> for a single free-form answer. Lines whose variables are all empty are removed.</html:p>
+          <html:p data-i18n="layout.help">Legacy structured-output layout. Native Comment is never overwritten. A layout combines fields, adds fixed text, or inserts <html:code>{{ai}}</html:code> for a single free-form answer. Lines whose variables are all empty are removed.</html:p>
           <html:textarea id="annota-template" rows="5" class="annota-input annota-code"
                          aria-label="Layout" placeholder="Empty: default layout." data-i18n-ph="layout.ph"/>
         </html:div>
@@ -169,14 +125,62 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
       </html:details>
     </html:section>
 
-    <html:div class="annota-actions">
+    </html:details>
+    <html:details class="annota-details"><html:summary>Reset this configuration</html:summary><html:div class="annota-actions">
       <html:button id="annota-prompt-clear" type="button" class="annota-button"
                    data-i18n="colors.reset">Reset this color</html:button>
       <html:span id="annota-prompt-status" class="annota-status" role="status"/>
-    </html:div>
+    </html:div></html:details>
+
+        </html:div>
+      </html:div>
+    </html:section>
+    <html:section class="annota-card">
+      <html:h3 class="annota-card-title">Global Fields</html:h3>
+      <html:p class="annota-help">Available for every highlight color. Add, rename, reorder or remove fields below. Removing a definition keeps its historical values. Multi-select supports searchable suggestions, new values and removable selections.</html:p>
+      <html:div id="annota-global-fields-editor">
+        <html:textarea id="annota-global-fields" rows="4" class="annota-input annota-code" aria-label="Global fields"/>
+      </html:div>
+      <html:div id="annota-global-fields-status" class="annota-status" role="status"/>
+    </html:section>
+
+      <html:section class="annota-settings-visible">
+        <html:h3>Color Label Layout</html:h3>
+        <html:div class="annota-details-body">
+        <html:div class="annota-form">
+  <html:label class="annota-field-label" for="annota-color-label-layout">
+    Color label layout
+  </html:label>
+
+  <html:select id="annota-color-label-layout" class="annota-input annota-w-md">
+    <html:option value="single">Single Row</html:option>
+    <html:option value="wrap">Wrap</html:option>
+    <html:option value="stack">Stacked</html:option>
+    <html:option value="slanted">Slanted</html:option>
+    <html:option value="vertical">Vertical</html:option>
+  </html:select>
+</html:div>
+</html:div></html:section>
+<html:section class="annota-settings-visible"><html:h3>Research Note Order</html:h3><html:div class="annota-details-body"><html:div class="annota-form">
+  <html:label class="annota-field-label" for="annota-paper-note-sort">
+    Research note entry order
+  </html:label>
+  <html:select id="annota-paper-note-sort" class="annota-input annota-w-md">
+    <html:option value="pdf">PDF reading order</html:option>
+    <html:option value="color">Group by annotation color</html:option>
+  </html:select>
+  <html:span class="annota-help">
+    Applies when a PDF research note is next synchronized.
+  </html:span>
+</html:div>
+
+
+        </html:div>
+      </html:section>
+
   </html:div>
 
-  <!-- =============================== IA ================================ -->
+  <!-- AI provider configuration -->
   <html:div id="annota-pane-ai" class="annota-pane" role="tabpanel" hidden="hidden">
 
     <html:p class="annota-lead" data-i18n="ai.lead">Used by colors that have a prompt, and by the chat.</html:p>
@@ -195,16 +199,16 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
           <html:label class="annota-field-label" for="annota-apikey" data-i18n="ai.key">API key</html:label>
           <html:div class="annota-inline">
             <html:input id="annota-apikey" type="password" class="annota-input annota-w-lg"
-                        data-pref="annota.apiKey" autocomplete="off"/>
+                        data-pref="researchannotator.apiKey" autocomplete="off"/>
             <html:button id="annota-apikey-show" type="button" class="annota-button"
                          data-i18n="ai.show">Show</html:button>
           </html:div>
           <html:label class="annota-field-label" for="annota-model" data-i18n="ai.model">Model</html:label>
           <html:input id="annota-model" type="text" class="annota-input annota-w-lg"
-                      data-pref="annota.model"/>
+                      data-pref="researchannotator.model"/>
           <html:label class="annota-field-label" for="annota-endpoint" data-i18n="ai.endpoint">Endpoint</html:label>
           <html:input id="annota-endpoint" type="text" class="annota-input annota-w-lg"
-                      data-pref="annota.endpoint"/>
+                      data-pref="researchannotator.endpoint"/>
         </html:div>
         <html:p class="annota-help" data-i18n="ai.openai.help">Any OpenAI-compatible endpoint. Mistral keys: console.mistral.ai.</html:p>
       </html:div>
@@ -220,7 +224,7 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
           </html:div>
           <html:label class="annota-field-label" for="annota-ollama-endpoint" data-i18n="ai.endpoint">Endpoint</html:label>
           <html:input id="annota-ollama-endpoint" type="text" class="annota-input annota-w-lg"
-                      data-pref="annota.ollamaEndpoint"/>
+                      data-pref="researchannotator.ollamaEndpoint"/>
         </html:div>
         <html:p class="annota-help" data-i18n="ai.ollama.help">Models installed in Ollama. Refresh after <html:code>ollama pull</html:code>. Tags are significant: <html:code>llama3.1:8b</html:code> ≠ <html:code>llama3.1</html:code>.</html:p>
       </html:div>
@@ -233,10 +237,10 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
             <html:div class="annota-form">
               <html:label class="annota-field-label" for="annota-swiftc">swiftc</html:label>
               <html:input id="annota-swiftc" type="text" class="annota-input annota-w-lg"
-                          data-pref="annota.swiftcPath"/>
+                          data-pref="researchannotator.swiftcPath"/>
               <html:label class="annota-field-label" for="annota-applepath" data-i18n="ai.helper">Helper binary</html:label>
               <html:input id="annota-applepath" type="text" class="annota-input annota-w-lg"
-                          data-pref="annota.applePath"/>
+                          data-pref="researchannotator.applePath"/>
             </html:div>
           </html:div>
         </html:details>
@@ -248,7 +252,7 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
           <html:div class="annota-field-stack">
             <html:div class="annota-inline">
               <html:input id="annota-cli-path" type="text" class="annota-input annota-w-lg"
-                          data-pref="annota.cliPath"/>
+                          data-pref="researchannotator.cliPath"/>
               <html:button id="annota-cli-detect" type="button" class="annota-button"
                            data-i18n="ai.detect">Detect</html:button>
             </html:div>
@@ -275,17 +279,17 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
       <html:div class="annota-form">
         <html:label class="annota-field-label" for="annota-lang" data-i18n="gen.lang">Output language</html:label>
         <html:input id="annota-lang" type="text" class="annota-input annota-w-sm"
-                    data-pref="annota.language"/>
+                    data-pref="researchannotator.language"/>
         <html:label class="annota-field-label" for="annota-maxwords" data-i18n="gen.words">Word limit</html:label>
         <html:input id="annota-maxwords" type="number" min="20" max="200"
-                    class="annota-input annota-w-num" data-pref="annota.maxWords"/>
+                    class="annota-input annota-w-num" data-pref="researchannotator.maxWords"/>
         <html:label class="annota-field-label" for="annota-temp" data-i18n="gen.temp">Temperature</html:label>
         <html:input id="annota-temp" type="number" min="0" max="2" step="0.1"
-                    class="annota-input annota-w-num" data-pref="annota.temperature"/>
+                    class="annota-input annota-w-num" data-pref="researchannotator.temperature"/>
       </html:div>
       <html:p class="annota-help" data-i18n="gen.help">Language and word limit are available in prompts as <html:code>{{language}}</html:code> and <html:code>{{maxWords}}</html:code>. Temperature applies to the HTTP providers only.</html:p>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.structuredOutput"/>
+        <html:input type="checkbox" data-pref="researchannotator.structuredOutput"/>
         <html:span><html:span data-i18n="gen.json">Request structured output (JSON) when supported</html:span>
           <html:small class="annota-help" data-i18n="gen.json.help">Mistral / OpenAI-compatible and Ollama. A reply that is not valid JSON is parsed as plain text.</html:small></html:span>
       </html:label>
@@ -294,11 +298,11 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
     <html:section class="annota-card">
       <html:h3 class="annota-card-title" data-i18n="ctx.title">Context sent</html:h3>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.sendContext"/>
+        <html:input type="checkbox" data-pref="researchannotator.sendContext"/>
         <html:span data-i18n="ctx.meta">Reference metadata (title, authors, year, abstract)</html:span>
       </html:label>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.resolveCitations"/>
+        <html:input type="checkbox" data-pref="researchannotator.resolveCitations"/>
         <html:span data-i18n="ctx.refs">Works cited in the passage</html:span>
       </html:label>
       <html:details class="annota-details">
@@ -307,10 +311,10 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
           <html:div class="annota-form">
             <html:label class="annota-field-label" for="annota-maxabstract" data-i18n="ctx.abstract">Abstract length (characters)</html:label>
             <html:input id="annota-maxabstract" type="number" min="0" max="10000" step="100"
-                        class="annota-input annota-w-num" data-pref="annota.maxAbstractChars"/>
+                        class="annota-input annota-w-num" data-pref="researchannotator.maxAbstractChars"/>
             <html:label class="annota-field-label" for="annota-maxrefs" data-i18n="ctx.maxrefs">Maximum references</html:label>
             <html:input id="annota-maxrefs" type="number" min="1" max="30"
-                        class="annota-input annota-w-num" data-pref="annota.maxRefs"/>
+                        class="annota-input annota-w-num" data-pref="researchannotator.maxRefs"/>
           </html:div>
           <html:p data-i18n="ctx.limits.help">0: no abstract truncation. Citations such as <html:code>[1]</html:code> or <html:code>(Author, year)</html:code> are resolved through the PDF's internal links, then its bibliography, and passed as <html:code>{{references}}</html:code>. In an EPUB, footnote calls (a number glued to a word) are followed to their note, sent as <html:code>[note 9]</html:code>.</html:p>
         </html:div>
@@ -342,10 +346,10 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
       <html:div class="annota-form">
         <html:label class="annota-field-label" for="annota-chat-model">Mistral / API</html:label>
         <html:input id="annota-chat-model" type="text" class="annota-input annota-w-md"
-                    data-pref="annota.chatModel"/>
+                    data-pref="researchannotator.chatModel"/>
         <html:label class="annota-field-label" for="annota-chat-ollama-model">Ollama</html:label>
         <html:input id="annota-chat-ollama-model" type="text" class="annota-input annota-w-md"
-                    data-pref="annota.chatOllamaModel"/>
+                    data-pref="researchannotator.chatOllamaModel"/>
         <html:label class="annota-field-label" for="annota-chat-cli-model">Claude CLI</html:label>
         <html:div class="annota-field-stack">
           <html:select id="annota-chat-cli-model" class="annota-input annota-w-md"/>
@@ -363,27 +367,27 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
     <html:section class="annota-card">
       <html:h3 class="annota-card-title" data-i18n="chat.ctx">Context</html:h3>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.chatIncludeAnnotations"/>
+        <html:input type="checkbox" data-pref="researchannotator.chatIncludeAnnotations"/>
         <html:span data-i18n="chat.ctx.anns">Annotations on the document</html:span>
       </html:label>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.chatIncludeNotes"/>
+        <html:input type="checkbox" data-pref="researchannotator.chatIncludeNotes"/>
         <html:span data-i18n="chat.ctx.notes">Notes on the reference</html:span>
       </html:label>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.chatEditNotes"/>
+        <html:input type="checkbox" data-pref="researchannotator.chatEditNotes"/>
         <html:span data-i18n="chat.ctx.edit">Let the AI propose changes to notes (applied only on your click)</html:span>
       </html:label>
       <html:div class="annota-form">
         <html:label class="annota-field-label" for="annota-chat-maxchars" data-i18n="chat.ctx.size">Context size (characters)</html:label>
         <html:div class="annota-field-stack">
           <html:input id="annota-chat-maxchars" type="number" min="0" max="2000000" step="1000"
-                      class="annota-input annota-w-num" data-pref="annota.chatMaxChars"/>
+                      class="annota-input annota-w-num" data-pref="researchannotator.chatMaxChars"/>
           <html:span class="annota-help" data-i18n="chat.ctx.size.help">0: automatic, per provider</html:span>
         </html:div>
         <html:label class="annota-field-label" for="annota-chat-libitems" data-i18n="chat.ctx.items">Library items per answer</html:label>
         <html:input id="annota-chat-libitems" type="number" min="1" max="30"
-                    class="annota-input annota-w-num" data-pref="annota.chatLibraryItems"/>
+                    class="annota-input annota-w-num" data-pref="researchannotator.chatLibraryItems"/>
       </html:div>
       <html:details class="annota-details">
         <html:summary data-i18n="chat.ctx.how">Context construction</html:summary>
@@ -408,7 +412,7 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
     <html:section class="annota-card">
       <html:h3 class="annota-card-title" data-i18n="chat.hist">History</html:h3>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.chatKeepHistory"/>
+        <html:input type="checkbox" data-pref="researchannotator.chatKeepHistory"/>
         <html:span data-i18n="chat.hist.keep">Save conversations</html:span>
       </html:label>
       <html:p class="annota-help" data-i18n="chat.hist.help">Stored in <html:code>annota-chats.json</html:code>, in the Zotero data directory. The 300 most recent are kept. Open the list with the clock button of the chat panel.</html:p>
@@ -420,25 +424,27 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
         <html:label class="annota-field-label" for="annota-chat-shortcut" data-i18n="chat.shortcut">Shortcut letter</html:label>
         <html:div class="annota-field-stack">
           <html:input id="annota-chat-shortcut" type="text" maxlength="1"
-                      class="annota-input annota-w-key" data-pref="annota.chatShortcut"/>
+                      class="annota-input annota-w-key" data-pref="researchannotator.chatShortcut"/>
           <html:span class="annota-help" data-i18n="chat.shortcut.help">Combined with ⌘ (macOS) or Ctrl. Empty: no shortcut.</html:span>
         </html:div>
       </html:div>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.chatSelectionButton"/>
-        <html:span data-i18n="chat.askbtn">Show “Ask Annota” in the text selection popup</html:span>
+        <html:input type="checkbox" data-pref="researchannotator.chatSelectionButton"/>
+        <html:span data-i18n="chat.askbtn">Show “Ask ResearchAnnotator” in the text selection popup</html:span>
       </html:label>
     </html:section>
   </html:div>
 
   <!-- ============================= GÉNÉRAL ============================= -->
   <html:div id="annota-pane-general" class="annota-pane" role="tabpanel" hidden="hidden">
+<html:section class="annota-card"><html:h3>Note Destination</html:h3><html:p>For non-PDF managed notes only. Destinations remain in the source library. Choose library root, collection membership or a parent publication in the Notes workflow. Existing notes keep their location until explicitly moved.</html:p><html:label>Placement policy <html:select id="annota-note-destination-mode" class="annota-input"><html:option value="default">Default destination</html:option><html:option value="ask">Ask every time</html:option><html:option value="last">Remember last destination</html:option></html:select></html:label></html:section>
+
 
     <html:section class="annota-card">
       <html:h3 class="annota-card-title" data-i18n="gen.ui">Interface</html:h3>
       <html:div class="annota-form">
         <html:label class="annota-field-label" for="annota-ui-lang" data-i18n="gen.ui.lang">Language</html:label>
-        <html:select id="annota-ui-lang" class="annota-input annota-w-sm" data-pref="annota.uiLanguage">
+        <html:select id="annota-ui-lang" class="annota-input annota-w-sm" data-pref="researchannotator.uiLanguage">
           <html:option value="auto" data-i18n="gen.ui.auto">Automatic (Zotero language)</html:option>
           <html:option value="en">English</html:option>
           <html:option value="fr">Français</html:option>
@@ -450,7 +456,7 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
       <html:h3 class="annota-card-title" data-i18n="spell.title">Spelling and grammar (macOS)</html:h3>
       <html:div class="annota-form">
         <html:label class="annota-field-label" for="annota-spell-lang" data-i18n="spell.lang">Language</html:label>
-        <html:select id="annota-spell-lang" class="annota-input annota-w-md" data-pref="annota.spellLanguage">
+        <html:select id="annota-spell-lang" class="annota-input annota-w-md" data-pref="researchannotator.spellLanguage">
           <html:option value="auto" data-i18n="spell.auto">Automatic (detected by macOS)</html:option>
           <html:option value="fr">Français</html:option>
           <html:option value="en">English</html:option>
@@ -461,11 +467,11 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
         </html:select>
       </html:div>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.spellGrammar"/>
+        <html:input type="checkbox" data-pref="researchannotator.spellGrammar"/>
         <html:span data-i18n="spell.grammar">Also check grammar</html:span>
       </html:label>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.spellLive"/>
+        <html:input type="checkbox" data-pref="researchannotator.spellLive"/>
         <html:span data-i18n="spell.live">Check while typing (notes and annotation comments)</html:span>
       </html:label>
       <html:p class="annota-help" data-i18n="spell.help">Uses the macOS spell checker (Pages, Mail). While you type in a note or an annotation comment, issues are underlined (red: spelling, blue: grammar); click an underlined word for suggestions. For a review of several texts at once: right-click annotations in the reader, or references and notes in the library, then <html:b>Check spelling and grammar</html:b>. Only the visible text is checked; formatting is kept. Words added to the dictionary are shared with macOS.</html:p>
@@ -474,19 +480,19 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
     <html:section class="annota-card">
       <html:h3 class="annota-card-title" data-i18n="behav.title">Behavior</html:h3>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.alsoUnderline"/>
+        <html:input type="checkbox" data-pref="researchannotator.alsoUnderline"/>
         <html:span data-i18n="behav.underline">Also process underlines</html:span>
       </html:label>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.overwrite"/>
+        <html:input type="checkbox" data-pref="researchannotator.overwrite"/>
         <html:span data-i18n="behav.overwrite">Overwrite existing comments</html:span>
       </html:label>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.showPlaceholder"/>
+        <html:input type="checkbox" data-pref="researchannotator.showPlaceholder"/>
         <html:span data-i18n="behav.placeholder">Show a placeholder during generation</html:span>
       </html:label>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.cardFields"/>
+        <html:input type="checkbox" data-pref="researchannotator.cardFields"/>
         <html:span data-i18n="behav.cardfields">Show the color's fields in the annotation sidebar, instead of the comment</html:span>
       </html:label>
     </html:section>
@@ -497,18 +503,18 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
       <html:div class="annota-form">
         <html:label class="annota-field-label" for="annota-retries" data-i18n="fail.retries">Extra attempts</html:label>
         <html:input id="annota-retries" type="number" min="0" max="5"
-                    class="annota-input annota-w-num" data-pref="annota.retries"/>
+                    class="annota-input annota-w-num" data-pref="researchannotator.retries"/>
       </html:div>
       <html:label class="annota-check">
-        <html:input type="checkbox" data-pref="annota.markFailures"/>
+        <html:input type="checkbox" data-pref="researchannotator.markFailures"/>
         <html:span data-i18n="fail.tag">Tag failed annotations</html:span>
       </html:label>
       <html:div class="annota-form">
         <html:label class="annota-field-label" for="annota-failedtag" data-i18n="fail.tagname">Tag</html:label>
         <html:input id="annota-failedtag" type="text" class="annota-input annota-w-sm"
-                    data-pref="annota.failedTag"/>
+                    data-pref="researchannotator.failedTag"/>
       </html:div>
-      <html:p class="annota-help" data-i18n="fail.help2">Context menu → Annota → <html:b>Retry failed comments</html:b> processes tagged annotations only. Authentication errors and missing models are not retried.</html:p>
+      <html:p class="annota-help" data-i18n="fail.help2">Context menu → ResearchAnnotator → <html:b>Retry failed comments</html:b> processes tagged annotations only. Authentication errors and missing models are not retried.</html:p>
     </html:section>
 
     <html:section class="annota-card">
@@ -518,5 +524,39 @@ resume     | Résumé     | ai       | Résume le passage en une phrase. | itali
     </html:section>
   </html:div>
 
+  <html:div id="annota-pane-data" class="annota-pane" role="tabpanel" hidden="hidden">
+    <html:section class="annota-card">
+      <html:h3 class="annota-card-title">Data Management</html:h3>
+      <html:label>Maximum concurrent background AI requests
+        <html:input type="number" min="1" max="8" class="annota-input annota-w-num" data-pref="researchannotator.aiConcurrency"/>
+      </html:label>
+      <html:p class="annota-help">Portable extension settings and structured research data. Credentials and machine-specific executable paths are excluded. Backups do not contain Zotero PDFs, its database or ordinary notes. Keep a separate Zotero profile/data backup. Signed-in user and group identities work across devices; unsigned libraries require explicit mapping.</html:p>
+      <html:div id="annota-data-actions"/>
+      <html:input id="annota-data-file" type="file" accept=".json,application/json" hidden="hidden"/>
+      <html:div id="annota-data-import" hidden="hidden">
+        <html:label>Import behavior
+          <html:select id="annota-data-mode" class="annota-input">
+            <html:option value="merge">Merge non-destructively</html:option>
+            <html:option value="replace">Replace imported settings / matched annotation records</html:option>
+          </html:select>
+        </html:label>
+        <html:label>When values conflict
+          <html:select id="annota-data-conflict" class="annota-input">
+            <html:option value="keep">Keep existing values</html:option>
+            <html:option value="incoming">Use imported values</html:option>
+            <html:option value="abort">Stop if any conflict exists</html:option>
+          </html:select>
+        </html:label>
+        <html:div id="annota-data-libraries"/>
+        <html:button id="annota-data-preview" type="button" class="annota-button">Preview Import</html:button>
+        <html:button id="annota-data-apply" type="button" class="annota-button" disabled="disabled">Apply Reviewed Import</html:button>
+        <html:pre id="annota-data-preview-text" style="white-space:pre-wrap;max-height:320px;overflow:auto;"/>
+      </html:div>
+      <html:div id="annota-data-status" class="annota-status" role="status"/>
+      <html:h4>Background operations</html:h4>
+      <html:p class="annota-help">Interrupted AI requests require review before resuming. Completed results are retained when work is cancelled.</html:p>
+      <html:div id="annota-background-jobs"/>
+    </html:section>
+  </html:div>
 </html:div>
 </vbox>

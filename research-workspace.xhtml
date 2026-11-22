@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-stylesheet href="chrome://global/skin/" type="text/css"?>
+<?xml-stylesheet href="chrome://zotero/skin/zotero.css" type="text/css"?>
+<window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul" xmlns:html="http://www.w3.org/1999/xhtml" windowtype="researchannotator:workspace" title="Research Workspace" width="1160" height="820">
+<script type="application/javascript" src="research-workspace-window.js"/>
+<html:style>
+:root { color-scheme:light dark; background:Canvas; color:CanvasText; }
+#ContentSelectDropdownPopup { background:Canvas !important; color:CanvasText !important; }
+#workspace-shell { display:flex; flex-direction:column; height:100vh; min-height:0; font:message-box; }
+#workspace-tabs { display:flex; gap:6px; padding:8px; border-bottom:1px solid GrayText; }
+#workspace-tabs button { font:inherit; padding:6px 12px; border:1px solid transparent; border-radius:4px; color:inherit; background:transparent; }
+#workspace-tabs button:hover { background:rgba(127,127,127,.15); }
+#workspace-tabs button[aria-selected="true"] { border-color:GrayText; background:rgba(127,127,127,.12); }
+#workspace-panels { flex:1; display:flex; min-height:0; } #workspace-panels iframe { flex:1; width:100%; border:0; min-height:0; }
+#workspace-panels iframe[hidden] { display:none; }
+#workspace-heading{padding:8px 16px 0}#workspace-heading h1{font:inherit;font-size:18px;font-weight:600;margin:0 0 3px}#workspace-description{margin:0;line-height:1.4}#workspace-error { white-space:pre-wrap; color:CanvasText; padding:0 10px; }
+</html:style>
+<html:div id="workspace-shell">
+<html:nav id="workspace-tabs" role="tablist" aria-label="Research Workspace">
+<html:button id="tab-explorer" role="tab" data-tab="explorer">Explorer</html:button>
+<html:button id="tab-notes" role="tab" data-tab="notes">Notes</html:button>
+<html:button id="tab-saved" role="tab" data-tab="saved">Saved Searches</html:button>
+<html:button id="tab-activity" role="tab" data-tab="activity">Activity</html:button>
+<html:button id="tab-network" role="tab" data-tab="network">Network</html:button>
+</html:nav>
+<html:header id="workspace-heading"><html:h1 id="workspace-title">Research Workspace</html:h1><html:p id="workspace-description"/></html:header><html:p id="workspace-error" role="alert"/>
+<html:div id="workspace-panels"/>
+</html:div>
+</window>

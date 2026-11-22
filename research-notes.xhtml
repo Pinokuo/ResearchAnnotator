@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Research Notes</title>
+<style>
+:root { color-scheme:light dark; }
+body[data-workspace-section="activity"] > fieldset:not(:last-of-type), body[data-workspace-section="activity"] > h1,body[data-workspace-section="activity"] > p:not(#status) { display:none; }
+body[data-workspace-section="notes"] > fieldset:last-of-type { display:none; }
+body { font: message-box; color: CanvasText; background: Canvas; margin: 18px; }
+fieldset { border: 1px solid GrayText; border-radius: 5px; margin: 12px 0; padding: 12px; }
+label { display: inline-block; margin: 5px 10px 5px 0; } button,select,input { font: inherit; padding: 4px; }
+select,option { background:Field; color:FieldText; }
+button { margin: 4px; } select[multiple] { min-width: 240px; min-height: 100px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+#preview { border: 1px solid GrayText; padding: 12px; max-height: 300px; overflow: auto; }
+#status { white-space: pre-wrap; } .record { border-top: 1px solid GrayText; padding: 8px 0; }
+#summary { white-space: pre-wrap; } #fields { max-height: 130px; overflow: auto; }
+[hidden]{display:none!important} #note-start button{padding:10px 14px} #note-guide > summary{font-weight:bold} #note-management .record > details{border:1px solid GrayText;padding:8px}
+</style><link rel="stylesheet" href="research-ui.css" />
+<script src="research-notes-dashboard.js"></script></head>
+<body>
+<h1>Research Notes</h1>
+
+<p id="status" role="status" aria-live="polite"></p>
+<nav id="notes-mode-nav" aria-label="Research Notes workflow"><button type="button" data-notes-mode="create" aria-pressed="true">Create a note</button><button type="button" data-notes-mode="manage" aria-pressed="false">Manage existing notes</button></nav><fieldset id="note-create"><legend>Create a research note</legend><div class="row" id="note-start"><button type="button" data-note-type="pdf">By Publication</button><button type="button" data-note-type="field">By Field</button><button type="button" data-note-type="color">By Color</button><button type="button" id="from-saved-search">From Saved Search</button></div><ol id="note-steps"><li>Type</li><li>Sources</li><li>Content</li><li>Preview</li><li>Generate</li></ol><details id="note-guide"><summary>Source scope and content</summary>
+<section class="note-step" data-note-step="2"><h2>Choose source scope</h2><div class="row">
+<label>Generate by <select id="kind"><option value="pdf">By Publication</option><option value="field">Structured field</option><option value="color">Highlight color</option></select></label>
+<label>Source scope <select id="scope"><option value="library">Entire library</option><option value="collection">Selected collection</option><option value="publications">Selected publications</option><option value="attachments">Selected PDF attachments</option></select></label>
+<button id="load" type="button">Load fields and colors</button>
+</div><button type="button" id="note-source-next" class="primary">Continue to content</button></section>
+<section class="note-step" data-note-step="3"><h2>Configure relevant content</h2><div class="row"><label id="fieldLabel">Field <select id="field"></select></label>
+<label id="valuesLabel">Values (none means any populated value)<select id="values" multiple="multiple"></select></label>
+<label id="colorsLabel">Semantic colors<select id="colors" multiple="multiple"></select></label></div>
+<div class="row"><label>Title <input id="title" placeholder="Automatic context-aware title" value="" /></label>
+<label>Synchronization <select id="mode"><option value="auto" selected="selected">Automatic</option><option value="manual">Manual</option><option value="static">Static snapshot</option></select></label></div>
+
+<details id="note-destination"><summary>Note destination (non-PDF notes)</summary><p>PDF notes appear under their parent publication and keep their PDF-specific identity. A standalone PDF has a standalone note. Other notes stay in their source library. Collection membership and child-note attachment are different placements.</p><label>Preference <select id="destination-mode"><option value="default">Default destination</option><option value="ask">Ask every time</option><option value="last">Remember last destination</option></select></label><label>Find parent publication <input id="destination-search" type="search" /></label><button id="destination-load" type="button">Find destinations</button><label>Destination <select id="destination-choice" aria-label="Note destination"></select></label><button id="destination-default" type="button">Save as default for this library</button><p id="destination-status" role="status"></p></details><details><summary>Content and saved configuration</summary><div id="include"></div><div id="fields"></div></details>
+<details><summary>Advanced AI generation options</summary><div class="row"><label>AI values <select id="ai"><option value="existing">Use existing values only</option><option value="missing">Generate missing values and retry failures first</option></select></label>
+<label><input id="outdated" type="checkbox" /> Explicitly regenerate outdated values</label></div>
+</details><button id="previewButton" type="button">Preview and summarize</button>
+</section><section class="note-step" data-note-step="4"><h2>Preview your note</h2><p id="summary"></p><div id="preview"></div><button id="note-confirm-next" type="button" class="primary">Continue to generation</button></section><section class="note-step" data-note-step="5"><h2>Generate or update</h2><p>Review the preview before confirming. Existing note identities and user content are preserved.</p><button id="generate" type="button" class="primary">Generate notes</button></section><button id="note-back" type="button">Back</button></details>
+</fieldset>
+<fieldset id="note-management"><legend>Manage existing notes</legend><details id="bulk-modes"><summary>Change update mode for multiple notes</summary><p>Automatic keeps notes up to date. Manual updates only when requested. Static keeps a fixed snapshot. Preview before applying; authored content and destinations stay intact.</p><button id="mode-list" type="button">Select notes for mode change</button><div id="mode-configs"></div><label>New update mode <select id="bulk-mode"><option value="auto">Automatic</option><option value="manual">Manual</option><option value="static">Static snapshot</option></select></label><button id="mode-preview" type="button">Preview mode changes</button><pre id="mode-summary"></pre><button id="mode-apply" type="button" disabled="disabled">Confirm mode changes</button></details><details id="batch-defaults"><summary>Apply simplified content defaults to selected configurations</summary><p>Explicit saved settings are preserved until you select and confirm replacement. Notes keep their identities and positioned user content. Static snapshots remain protected.</p><label>Scope <select id="batch-scope"><option value="library">Current library</option><option value="all">All available libraries</option></select></label><label>Note type <select id="batch-kind"><option value="all">All types</option><option value="pdf">PDF notes</option><option value="research">Cross-publication notes</option></select></label><button id="batch-list" type="button">List configurations</button><div id="batch-configs"></div><button id="batch-preview" type="button">Preview selected replacements</button><pre id="batch-summary"></pre><button id="batch-apply" type="button" disabled="disabled">Confirm and apply replacements</button></details><button id="refresh" type="button">Refresh notes and jobs</button><div id="notes"></div></fieldset>
+<fieldset><legend>Background generation jobs</legend><div id="jobs"></div><details><summary>Completed and cancelled history</summary><div id="job-history"></div></details></fieldset>
+</body></html>
