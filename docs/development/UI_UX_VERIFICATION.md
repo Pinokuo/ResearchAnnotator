@@ -69,13 +69,13 @@ Additional light-mode Workspace captures are 984 x 721.
 
 | Surface | Wide | Compact | Findings |
 | --- | --- | --- | --- |
-| Explorer | [wide](ui-ux-screenshots-release_xpi/workspace-explorer-wide.png) | [compact](ui-ux-screenshots-release_xpi/workspace-explorer-compact.png) | Wide search, readable cards, scoped selects fit; vertical results scroll |
-| Notes | [wide](ui-ux-screenshots-release_xpi/workspace-notes-wide.png) | [compact](ui-ux-screenshots-release_xpi/workspace-notes-compact.png) | Four clear entry choices; advanced forms absent initially |
-| Saved Searches | [wide](ui-ux-screenshots-release_xpi/workspace-saved-wide.png) | [compact](ui-ux-screenshots-release_xpi/workspace-saved-compact.png) | Existing empty list/actions retained; no clipping |
-| Activity | [wide](ui-ux-screenshots-release_xpi/workspace-activity-wide.png) | [compact](ui-ux-screenshots-release_xpi/workspace-activity-compact.png) | Existing controls and wrapping retained; long history scrolls |
-| Network | [wide](ui-ux-screenshots-release_xpi/workspace-network-wide.png) | [compact](ui-ux-screenshots-release_xpi/workspace-network-compact.png) | Focused sections; narrow list/detail stacks vertically |
-| Full Chat | [wide](ui-ux-screenshots-release_xpi/chat-full-wide.png) | [compact](ui-ux-screenshots-release_xpi/chat-full-compact.png) | Composer/send fit; icons readable; citations and answer text wrap |
-| Sidebar Chat | [wide](ui-ux-screenshots-release_xpi/chat-sidebar-wide.png) | [compact](ui-ux-screenshots-release_xpi/chat-sidebar-compact.png) | Expand, composer, source summary and secondary panels remain accessible |
+| Explorer | `ui-ux-screenshots-release_xpi/workspace-explorer-wide.png` (local evidence: wide) | `ui-ux-screenshots-release_xpi/workspace-explorer-compact.png` (local evidence: compact) | Wide search, readable cards, scoped selects fit; vertical results scroll |
+| Notes | `ui-ux-screenshots-release_xpi/workspace-notes-wide.png` (local evidence: wide) | `ui-ux-screenshots-release_xpi/workspace-notes-compact.png` (local evidence: compact) | Four clear entry choices; advanced forms absent initially |
+| Saved Searches | `ui-ux-screenshots-release_xpi/workspace-saved-wide.png` (local evidence: wide) | `ui-ux-screenshots-release_xpi/workspace-saved-compact.png` (local evidence: compact) | Existing empty list/actions retained; no clipping |
+| Activity | `ui-ux-screenshots-release_xpi/workspace-activity-wide.png` (local evidence: wide) | `ui-ux-screenshots-release_xpi/workspace-activity-compact.png` (local evidence: compact) | Existing controls and wrapping retained; long history scrolls |
+| Network | `ui-ux-screenshots-release_xpi/workspace-network-wide.png` (local evidence: wide) | `ui-ux-screenshots-release_xpi/workspace-network-compact.png` (local evidence: compact) | Focused sections; narrow list/detail stacks vertically |
+| Full Chat | `ui-ux-screenshots-release_xpi/chat-full-wide.png` (local evidence: wide) | `ui-ux-screenshots-release_xpi/chat-full-compact.png` (local evidence: compact) | Composer/send fit; icons readable; citations and answer text wrap |
+| Sidebar Chat | `ui-ux-screenshots-release_xpi/chat-sidebar-wide.png` (local evidence: wide) | `ui-ux-screenshots-release_xpi/chat-sidebar-compact.png` (local evidence: compact) | Expand, composer, source summary and secondary panels remain accessible |
 
 Also inspected: chat-full-capture, chat-keyword-answer, network-questions-wide,
 network-topics-wide, notes-content-compact, notes-management-compact,
@@ -106,3 +106,5 @@ regression protect those corrections.
   the deferred color-layout geometry are still Production Readiness work.
 
 Design decisions and navigation: [UI_UX_DESIGN.md](UI_UX_DESIGN.md).
+
+Historical local reports/screenshots named above are retained privately and are not repository downloads. Public beta screenshots are in [the visual user guide](../user-guide.md).

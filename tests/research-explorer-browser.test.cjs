@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {spawnSync}=require('node:child_process'),{pathToFileURL}=require('node:url');
 test('Explorer real-browser workspace supports search nested filters saved searches navigation and shared note handoff without AI',{timeout:60000},t=>{
     const edge=process.env.RESEARCHANNOTATOR_EDGE||'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';if(!fs.existsSync(edge))return t.skip('Edge unavailable');
-    const root=path.join(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'research-explorer-browser-'));
+    const root=path.join(__dirname, '..', 'src'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'research-explorer-browser-'));
     const fixture=`
     window.errors=[];window.onerror=m=>errors.push(m);window.confirm=()=>true;window.prompt=()=>"Fixture search";
     const calls={queries:0,AI:0,navigate:0,notes:0},saved=[];

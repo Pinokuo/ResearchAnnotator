@@ -133,7 +133,7 @@ cross-paper and automatic cloud-sync work remain planned.
 
 ## Authority, evidence and status rules
 
-- [AGENTS.md](AGENTS.md): development principles, preservation of existing work,
+- [AGENTS.md](../../AGENTS.md): development principles, preservation of existing work,
   structured data, native Comment and working functionality.
 - [REQUIREMENTS.md](REQUIREMENTS.md): approved behavior and later explicit changes,
   including managed notes per PDF, global fields, portability, synchronization
@@ -191,8 +191,8 @@ work is established by source/tests/build hashes, not a nonexistent commit.
 
 | ID | Feature | Status | Evidence and remaining work | Phase |
 | --- | --- | --- | --- | --- |
-| HC01 | Read Zotero's palette with fallback colors | Requires runtime verification | S: [bootstrap.js](bootstrap.js), `COLORS`, `FALLBACK_COLORS`; creation tests exercise fallback behavior, not every native palette/version | 1, 9 |
-| HC02 | Add highlight colors | In development | T/S: [palette.js](palette.js) `add`; persisted stable palette and preferences controls; real reader acceptance pending | 4 |
+| HC01 | Read Zotero's palette with fallback colors | Requires runtime verification | S: [bootstrap.js](../../src/bootstrap.js), `COLORS`, `FALLBACK_COLORS`; creation tests exercise fallback behavior, not every native palette/version | 1, 9 |
+| HC02 | Add highlight colors | In development | T/S: [palette.js](../../src/palette.js) `add`; persisted stable palette and preferences controls; real reader acceptance pending | 4 |
 | HC03 | Remove/archive highlight colors | In development | T: confirmed deleteColor permanently removes only unused custom configurations; usage guards protect native/store/category/draft/reassignment history. Archive and confirmed reassignAndArchive preserve identities/values; live checks pending | 4 |
 | HC04 | Reorder palette colors | In development | T: persisted ordering, compact reorder handles with keyboard and internal drag/drop; field definitions/IDs remain intact; actual drag/focus acceptance pending | 4 |
 | HC05 | Rename/customize actual highlight colors | In development | T: hex/picker/semantic label editor; `update` preserves identity/aliases and offers Keep versus Recolor; live acceptance pending | 4 |
@@ -209,20 +209,20 @@ work is established by source/tests/build hashes, not a nonexistent commit.
 | --- | --- | --- | --- | --- |
 | UI01 | Unified creation/existing-popup appearance | In development | T/S: common responsive width/padding/field sizing and explicit colors, native Comment, native Tags, global fields, then color fields; native nodes and contextual controls retained. Live geometry pending | 1, 4 |
 | UI02 | Shared field rendering and interaction logic | Partially implemented | Shared schema, AI presentation, multi-select, reads and saves exist; three separate renderers still implement ordinary controls | 1, 4 |
-| UI03 | Consistent sidebar fields | In development | T: [card-fields.js](card-fields.js) `build`, `fill`, `ensure`; global grouping and per-field Retry are not live accepted | 1 |
+| UI03 | Consistent sidebar fields | In development | T: [card-fields.js](../../src/card-fields.js) `build`, `fill`, `ensure`; global grouping and per-field Retry are not live accepted | 1 |
 | UI04 | Light/dark field presentation | Requires runtime verification | S/T: inherited text colors, restrained tints and dark-mode CSS; no actual app-theme/OS-theme visual matrix | 1, 9 |
 | UI05 | Keyboard/focus/screen-reader accessibility | Partially implemented | Labels, native controls, read-only AI, status regions and shortcut shielding exist. Multi-select keyboard entry is tested at logic level; full focus, list navigation, contrast and screen-reader acceptance are missing | 1, 4, 9 |
 | UI06 | Configured AI labels, placeholders, content-only presentation | Implemented | T/U for earlier field paths; T for current exact-label normalization, rich safe formatting and historical values not rewritten | 1 |
 | UI07 | Failure-only Retry directly under each AI field | In development | T: `fieldRetry`, `updateFieldRetry`; each retry passes one stable field ID. Live location/focus still pending | 1 |
 | UI08 | Remove native Add to Note only from creation | Requires runtime verification | S/T: scoped native selector and disable cleanup; selector checked against installed reader bundle. No live confirmation recorded for this suppression | 1, 9 |
-| UI09 | English/French localization | Partially implemented | [i18n.js](i18n.js) and existing settings support both; newer global-field/help/search strings include hard-coded English | 9 |
+| UI09 | English/French localization | Partially implemented | [i18n.js](../../src/i18n.js) and existing settings support both; newer global-field/help/search strings include hard-coded English | 9 |
 | UI10 | Native Comment entry before highlight creation | In development | T: `bootstrap.js` scoped/redraw-safe native-only drafts and guarded creation adapter; same native Comment persists independently of global/color/AI values. B22 fixes the accepted build's regression; live acceptance pending | 1 milestone |
 
 ## Research organization and structured fields
 
 | ID | Feature | Status | Evidence and remaining work | Phase |
 | --- | --- | --- | --- | --- |
-| RO01 | Global field settings: add/edit/reorder/remove | In development | T: actual preferences script exercised against minimal DOM; [preferences.js](preferences.js) `setupGlobalFields` reuses visual editor. Live pane validation pending | 1 |
+| RO01 | Global field settings: add/edit/reorder/remove | In development | T: actual preferences script exercised against minimal DOM; [preferences.js](../../src/preferences.js) `setupGlobalFields` reuses visual editor. Live pane validation pending | 1 |
 | RO02 | Global text, textarea, checkbox, dropdown, multi-select and AI definitions | In development | T/S: `getGlobalFields`, `saveGlobalFields`, `annotationFields`; every supported type is allowed, but full live type matrix is not established | 1 |
 | RO03 | Color-specific schemas, prompts and output layouts | Partially implemented | Existing syntax/visual editor and validation work in tested paths; newest multi-select integration is Phase 1 work, and inherited batch/review still use older contracts | 1 |
 | RO04 | Stable field IDs and safe display/variable-name changes | Implemented | T: global IDs, color schema column six, `fieldAliases`, `valuesByID`; scope of proof is stored data and tested editor operations | 1 |
@@ -281,11 +281,11 @@ work is established by source/tests/build hashes, not a nonexistent commit.
 | AI08 | Resume without losing successful values | Partially implemented | Incremental individual saves provide a foundation; failure status/job cursor and batch resume are not persistent | 6 |
 | AI09 | Optional AI-assisted categorization | Planned | Manual multi-select exists; no category suggestion/assignment workflow with review/confirmation found | 8 |
 | AI10 | Related evidence discovery | Planned | Chat retrieval is a precursor, not a verified structured evidence-linking/discovery feature | 8 |
-| AI11 | Document/library chat, collection scope and retrieval | Requires runtime verification | S/H5: [chat.js](chat.js) `buildDocumentContext`, `searchLibrary`, `buildLibraryContext`, collection controls. Retrieval is lexical/context-budget based; current global JSON is not comprehensively integrated | 8 |
+| AI11 | Document/library chat, collection scope and retrieval | Requires runtime verification | S/H5: [chat.js](../../src/chat.js) `buildDocumentContext`, `searchLibrary`, `buildLibraryContext`, collection controls. Retrieval is lexical/context-budget based; current global JSON is not comprehensively integrated | 8 |
 | AI12 | Chat citations, source navigation and selected-text questions | Requires runtime verification | S/H5/H7: `renderAskButton`, `quoteAnnotations`, page/item citation renderers and navigation; absent from current isolated suite | 8, 9 |
 | AI13 | Chat history, independent provider/model, stop and save-to-note | Requires runtime verification | S: `annota-chats.json`, `answer`, `stop`, `saveNote`; actual provider/persistence/UI behavior not verified in this inventory | 8, 9 |
 | AI14 | Chat note edit/create proposals and guarded undo | Requires runtime verification | S: `applyNoteProposal`, `undoNoteProposal` act after explicit user action and check changed content. Audit integration with managed-note boundaries; do not equate these with automatic compiler overwrite | 8 |
-| AI15 | Review annotations by color / selected-field refill | Partially implemented | S/H4: [review.js](review.js) review/refill UI exists; `isEmpty` still relies on native Comment and writers use old storage/comment contracts (B05/B13) | 2, 8 |
+| AI15 | Review annotations by color / selected-field refill | Partially implemented | S/H4: [review.js](../../src/review.js) review/refill UI exists; `isEmpty` still relies on native Comment and writers use old storage/comment contracts (B05/B13) | 2, 8 |
 | AI16 | Legacy batch generation/retry-failed comments | Partially implemented | S: `runBatch`, `processAnnotations`, failed tags/progress; still writes native Comment and does not merge per-annotation structured data safely (B07/B08) | 2, 6, 8 |
 | AI17 | HTTP-compatible, Ollama, CLI and Apple providers | Requires runtime verification | S: `complete`, provider adapters, retry/timeouts and detection settings. No real provider call/platform matrix in current tests; Apple is platform-gated | 8, 9 |
 | AI18 | Resolve cited references from PDF links/bibliography and EPUB notes | Requires runtime verification | S: reference/EPUB extraction helpers in core; no current provider/document-fixture acceptance matrix | 8, 9 |
@@ -295,7 +295,7 @@ work is established by source/tests/build hashes, not a nonexistent commit.
 
 | ID | Feature | Status | Evidence and remaining work | Phase |
 | --- | --- | --- | --- | --- |
-| DR01 | Complete extension settings export/import | In development | T: [data-manager.js](data-manager.js) portable preference inventory and [preferences-data.js](preferences-data.js) file/preview/apply controls; types/prompts/order/provider/note preferences round-trip; credentials/local executable state excluded | 2 |
+| DR01 | Complete extension settings export/import | In development | T: [data-manager.js](../../src/data-manager.js) portable preference inventory and [preferences-data.js](../../src/preferences-data.js) file/preview/apply controls; types/prompts/order/provider/note preferences round-trip; credentials/local executable state excluded | 2 |
 | DR02 | Semantic color-label export/import | In development | Legacy label JSON is consolidated into the Data Management settings importer (merge only), not a competing export engine; live file-picker check pending | 2, 9 |
 | DR03 | Structured research data export/import | In development | T: versioned record/definition/category/history/status export; match external library IDs + annotation/parent keys/type/text; merge/replacement/unmatched reports; cross-device fixtures pass | 2 |
 | DR04 | Complete backup/restore | In development | T: combined portable settings/research backup, automatic pre-import backups, received copy, rollback and pending-journal recovery. Excludes Zotero DB/PDFs/ordinary notes and credentials | 2 |
@@ -323,11 +323,11 @@ work is established by source/tests/build hashes, not a nonexistent commit.
 
 | ID | Feature | Status | Evidence and remaining work | Phase |
 | --- | --- | --- | --- | --- |
-| IN01 | Annotation-aware note citations, copy/export links and navigation | Requires runtime verification | S/H7: [citelink.js](citelink.js) serialization/editor/QuickCopy patches, `showAnnotation`; private Zotero APIs need live checks | 8, 9 |
+| IN01 | Annotation-aware note citations, copy/export links and navigation | Requires runtime verification | S/H7: [citelink.js](../../src/citelink.js) serialization/editor/QuickCopy patches, `showAnnotation`; private Zotero APIs need live checks | 8, 9 |
 | IN02 | Reduce existing notes to citations, with backup/undo | Requires runtime verification | S: `plan`, `reduce`, `undoLast`, `annota/sauvegardes-notes`; explicit confirmation and backups exist, but current version integration is not tested | 8, 9 |
-| IN03 | macOS spelling/grammar review and live correction | Requires runtime verification | S/H7: [spell.js](spell.js), [spell-live.js](spell-live.js); macOS checker, text/markup mapping and editor scanning. Not a Windows capability | 9 |
+| IN03 | macOS spelling/grammar review and live correction | Requires runtime verification | S/H7: [spell.js](../../src/spell.js), [spell-live.js](../../src/spell-live.js); macOS checker, text/markup mapping and editor scanning. Not a Windows capability | 9 |
 | IN04 | Expand/collapse collection tree | Requires runtime verification | S/H6: `toggleCollections`; no current live regression evidence | 9 |
-| IN05 | Provider/model detection, language/output/context settings | Requires runtime verification | S: [preferences.xhtml](preferences.xhtml), [preferences.js](preferences.js), [prefs.js](prefs.js); settings presence does not prove adapters/options work or remain relevant | 8, 9 |
+| IN05 | Provider/model detection, language/output/context settings | Requires runtime verification | S: [preferences.xhtml](../../src/preferences.xhtml), [preferences.js](../../src/preferences.js), [prefs.js](../../src/prefs.js); settings presence does not prove adapters/options work or remain relevant | 8, 9 |
 
 ## Production readiness
 
@@ -338,7 +338,7 @@ work is established by source/tests/build hashes, not a nonexistent commit.
 | PR03 | Accessibility acceptance | Planned | UI05 records existing support; keyboard/screen-reader/contrast/zoom acceptance matrix is not completed | 4, 5, 9 |
 | PR04 | Zotero/OS/document-type compatibility | Requires runtime verification | Manifest declares Zotero 7–10; PDF/EPUB/area paths, macOS-only tools and private reader/editor APIs require actual version/platform fixtures | 9 |
 | PR05 | Automated structured regression baseline | Implemented | T: 114 tests, preserving all prior 93, minimal DOM and mocked services; not a real Zotero integration suite | 1; extend per phase |
-| PR06 | Safe development packaging and exact source verification | Implemented | P: [package-dev.ps1](package-dev.ps1), 20-file allowlist, syntax/diff/hash/manifest checks and guarded temp cleanup; existing build inventory records successful run | 1, 9 |
+| PR06 | Safe development packaging and exact source verification | Implemented | P: [package-dev.ps1](../../scripts/package-dev.ps1), 20-file allowlist, syntax/diff/hash/manifest checks and guarded temp cleanup; existing build inventory records successful run | 1, 9 |
 | PR07 | Unique, reproducible development/version identification | Partially implemented | Timestamped filenames, XPI/source hashes and build inventories exist; internal version remains 2.42.0 and HEAD is dirty, so UI version alone is insufficient | 2, 9 |
 | PR08 | Correct safe release/update configuration | Broken | S/B20: current manifest ID differs from local `updates.json`; `release.sh` retains upstream repo/old filename while generator/workflow use ResearchAnnotator. This mismatch does not prove automatic cross-ID downgrade; installed/live feed remain unverified | 2, 9 |
 | PR09 | Live integration tests, release acceptance and rollback exercise | Planned | Checklists/manual backup guidance exist; actual global-field migration, provider, accessibility, sync, update and rollback acceptance reports are incomplete | 1 acceptance, 9 release gate |

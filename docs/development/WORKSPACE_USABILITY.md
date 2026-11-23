@@ -129,8 +129,10 @@ Annotation Review and Research Chat. The three adjacent independent toolbar
 buttons and their existing cleanup remain. Review, Chat, search, notes, AI,
 storage, repair and jobs continue using the existing implementations.
 
-Validated integrated candidate: `20261116-175519-328` (local verification artifact). Packaged-XPI native selection evidence: [NATIVE_USABILITY_XPI.json](NATIVE_USABILITY_XPI.json), Zotero 10.0.8, success true. Mouse and native keyboard selections changed application state; light/dark opacity, dismissal, 60-option scrolling and retained state passed.
+Validated integrated candidate: `20261116-175519-328` (local verification artifact). Packaged-XPI native selection evidence: `NATIVE_USABILITY_XPI.json` (local evidence: NATIVE_USABILITY_XPI.json), Zotero 10.0.8, success true. Mouse and native keyboard selections changed application state; light/dark opacity, dismissal, 60-option scrolling and retained state passed.
 
 The five future enhancements remain deferred in Production Readiness PR15 (FEATURE_BACKLOG.md, REQUIREMENTS.md and ROADMAP.md): safe bulk simplified-default application with preview, color-wide prompt audit, popup-heading/layout audit, contextual-help evaluation and removal only after unique capabilities/history are protected. None is implemented here.
 
-Retained-trigger candidate: `20261116-184638-320` (local verification artifact). All 266 regression tests pass. [Packaged native AI verification](NATIVE_AI_TRIGGER_XPI.json) passed in isolated Zotero 10.0.8 using real loopback HTTP requests, persistent jobs/storage and managed notes. [Provider evidence](NATIVE_AI_PROVIDER_REQUESTS_XPI.json): eight requests, two deliberate failures, explicit Retry in each mode; no hidden retry. Full PDF-reader gesture/provider acceptance remains outstanding.
+Retained-trigger candidate: `20261116-184638-320` (local verification artifact). All 266 regression tests pass. `NATIVE_AI_TRIGGER_XPI.json` (local evidence: Packaged native AI verification) passed in isolated Zotero 10.0.8 using real loopback HTTP requests, persistent jobs/storage and managed notes. `NATIVE_AI_PROVIDER_REQUESTS_XPI.json` (local evidence: Provider evidence): eight requests, two deliberate failures, explicit Retry in each mode; no hidden retry. Full PDF-reader gesture/provider acceptance remains outstanding.
+
+Historical local reports/screenshots named above are retained privately and are not repository downloads. Public beta screenshots are in [the visual user guide](../user-guide.md).

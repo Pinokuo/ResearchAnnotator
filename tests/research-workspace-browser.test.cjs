@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {spawnSync}=require('node:child_process'),{pathToFileURL}=require('node:url');
 test('unified workspace browser retains controllers and state across sections and transfers Explorer queries',{timeout:60000},t=>{
     const edge=process.env.RESEARCHANNOTATOR_EDGE||'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';if(!fs.existsSync(edge))return t.skip('Edge unavailable');
-    const root=path.join(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'research-workspace-browser-'));
+    const root=path.join(__dirname, '..', 'src'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'research-workspace-browser-'));
     const view=(name,script)=>fs.readFileSync(path.join(root,name+'.xhtml'),'utf8').replace(/<\?xml[^>]*\?>/,'').replace('<script src="'+script+'"></script>','<script>'+fs.readFileSync(path.join(root,script),'utf8')+'</script>');
     const views={'research-explorer':view('research-explorer','research-explorer-workspace.js'),'research-notes':view('research-notes','research-notes-dashboard.js')};
     const literal=value=>JSON.stringify(value).replace(/</g,'\\u003c');

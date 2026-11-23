@@ -6,7 +6,7 @@ const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 
-const root = path.join(__dirname, '..');
+const root = path.join(__dirname, '..', 'src');
 const edge = process.env.RESEARCHANNOTATOR_EDGE || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const literal = value => JSON.stringify(value).replace(/</g, '\\u003c');
 

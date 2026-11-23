@@ -10,7 +10,7 @@ test('research dashboard renders, previews without AI, queues explicit generatio
     const edge = process.env.RESEARCHANNOTATOR_EDGE || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
     if (!fs.existsSync(edge)) return t.skip('Edge is unavailable; native Zotero acceptance still required');
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'research-notes-dashboard-'));
-    const root = path.join(__dirname, '..');
+    const root = path.join(__dirname, '..', 'src');
     const html = fs.readFileSync(path.join(root, 'research-notes.xhtml'), 'utf8');
     const script = fs.readFileSync(path.join(root, 'research-notes-dashboard.js'), 'utf8');
     const fixture = `

@@ -1,6 +1,6 @@
 // Loopback-only deterministic fixture provider. No credentials or document exports.
 const fs=require('node:fs'),http=require('node:http'),path=require('node:path');
-const file=process.env.RESEARCH_RELIABILITY_PROVIDER_REPORT||path.join(__dirname,'..','NATIVE_RELIABILITY_PROVIDER.json');
+const file=process.env.RESEARCH_RELIABILITY_PROVIDER_REPORT||path.join(__dirname, '..', 'src','NATIVE_RELIABILITY_PROVIDER.json');
 if(fs.existsSync(file))throw Error('Choose a fresh report; prior evidence is preserved');
 const requests=[];let failNext=false;
 http.createServer((req,res)=>{let raw='';req.on('data',chunk=>raw+=chunk);req.on('end',()=>{try{

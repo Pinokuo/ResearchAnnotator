@@ -1,69 +1,25 @@
 $ErrorActionPreference = "Stop"
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-$files = @(
-    "manifest.json",
-    "LICENSE",
-    "bootstrap.js",
-    "prefs.js",
-    "preferences.xhtml",
-    "preferences.js",
-    "preferences.css",
-    "i18n.js",
-    "chat.js",
-    "citelink.js",
-    "review.js",
-    "spell.js",
-    "spell-live.js",
-    "card-fields.js",
-    "palette.js",
-    "color-mapper.js",
-    "data-manager.js",
-    "preferences-data.js",
-    "infrastructure.js",
-    "note-presentation.js",
-    "research-notes.js",
-    "research-notes-dashboard.js",
-    "research-notes.xhtml",
-    "research-explorer.js",
-    "research-explorer-workspace.js",
-    "research-explorer.xhtml",
-    "research-chat.js",
-    "research-chat-ui.js",
-    "research-chat-window.js",
-    "research-chat-window-host.js",
-    "research-chat-window.xhtml",
-    "research-ui.css",
-    "research-chat.css",
-    "evidence-capture.js",
-    "research-network.js",
-    "research-network-workspace.js",
-    "research-network.xhtml",
-    "research-workspace.js",
-    "research-workspace-window.js",
-    "research-workspace.xhtml",
-    "research-workspace.svg",
-    "annotation-review.svg",
-    "chat.svg",
-    "research-settings.svg",
-    "icon32.png",
-    "icon48.png",
-    "icon96.png"
-)
+$files = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'package-files.json') -Raw | ConvertFrom-Json)
+function Get-PackageSource([string]$file) {
+    if ($file -eq 'LICENSE') { return Join-Path $root $file }
+    return Join-Path (Join-Path $root 'src') $file
+}
 
 Write-Host "`n=== Checking required files ==="
 
 foreach ($file in $files) {
-    if (!(Test-Path (Join-Path $root $file) -PathType Leaf)) {
+    if (!(Test-Path (Get-PackageSource $file) -PathType Leaf)) {
         throw "Missing required file: $file"
     }
 }
 
 Write-Host "`n=== Validating manifest ==="
 
-$manifest = Get-Content (Join-Path $root "manifest.json") -Raw |
+$manifest = Get-Content (Join-Path $root "src/manifest.json") -Raw |
     ConvertFrom-Json
 
 if ($manifest.name -ne "ResearchAnnotator") {
@@ -81,7 +37,7 @@ Write-Host "`n=== Checking JavaScript syntax ==="
 $jsFiles = @($files | Where-Object { $_ -match '\.js$' })
 
 foreach ($file in $jsFiles) {
-    & node --check (Join-Path $root $file)
+    & node --check (Get-PackageSource $file)
 
     if ($LASTEXITCODE -ne 0) {
         throw "JavaScript syntax check failed: $file"
@@ -117,7 +73,7 @@ try {
     Write-Host "`n=== Copying extension files ==="
 
     foreach ($file in $files) {
-        Copy-Item (Join-Path $root $file) $stage
+        Copy-Item (Get-PackageSource $file) $stage
     }
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -139,7 +95,7 @@ try {
     )
 
     foreach ($file in $files) {
-        $source = Join-Path $root $file
+        $source = Get-PackageSource $file
         $packaged = Join-Path $verify $file
 
         if (!(Test-Path $packaged -PathType Leaf)) {

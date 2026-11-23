@@ -4,7 +4,7 @@ Publication note: consult the current README and GitHub Releases for availabilit
 
 ## Private documentation consolidation (2026-11-22)
 
-The existing independent repository now consolidates the reviewed visual README, canonical docs/, optional Python advisor and same-repository feedback templates. The beta XPI and application identities/code remain unchanged; repository visibility and the existing draft release remain private/unpublished. See [consolidation status](docs/release/private-consolidation.md) and [update-feed proposal](docs/release/update-feed-proposal.md). Real local instruct-model and mapper checks supplement the previous beta evidence; no production readiness claim is made.
+The existing independent repository now consolidates the reviewed visual README, canonical docs/, optional Python advisor and same-repository feedback templates. The beta XPI and application identities/code remain unchanged; repository visibility and the existing draft release remain private/unpublished. See [consolidation status](../release/private-consolidation.md) and [update-feed proposal](../release/update-feed-proposal.md). Real local instruct-model and mapper checks supplement the previous beta evidence; no production readiness claim is made.
 
 Proposed version: **2.43.0-beta.1**. The existing add-on ID, preferences, structured storage and managed-note markers are retained. Zotero requires an update URL. This beta uses a dedicated beta feed with an empty updates list; install later reviewed builds manually. The older development baseline is 2.42.0, so the beta version advances rather than downgrades installed development profiles.
 

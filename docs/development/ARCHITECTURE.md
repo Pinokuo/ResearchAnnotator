@@ -203,10 +203,10 @@ the actual packaged bytes, not HEAD alone.
 | Module | Responsibility |
 | --- | --- |
 | `bootstrap.js` | Native creation Comment drafts scoped by attachment and exact normalized text; shared popup layout/scrolling; global-first schemas, safe individual AI and existing serialized note compiler |
-| [palette.js](palette.js) | Stable palette configuration, original-hex aliases, frozen field IDs, presets, archiving/reorder, explicit transactional recoloring, contrast/semantic buttons, guarded reader creation adapter |
+| [palette.js](../../src/palette.js) | Stable palette configuration, original-hex aliases, frozen field IDs, presets, archiving/reorder, explicit transactional recoloring, contrast/semantic buttons, guarded reader creation adapter |
 | `card-fields.js` | Atomic serialized v2 JSON writes with flush; reads stable color records before legacy hex records; retains both, global values, field IDs, AI metadata and imported historical/status information |
-| [data-manager.js](data-manager.js) | Portable formats/validation, library matching, consistent structured-state snapshots, conflict previews, merge/replace, secret exclusion, automatic backups, local import journal/recovery and AI/import guards |
-| `preferences.js`, `preferences.xhtml`, [preferences-data.js](preferences-data.js) | Existing schema editor and new palette/Data Management controls; reviewed import plans, library mapping and post-import field editor refresh |
+| [data-manager.js](../../src/data-manager.js) | Portable formats/validation, library matching, consistent structured-state snapshots, conflict previews, merge/replace, secret exclusion, automatic backups, local import journal/recovery and AI/import guards |
+| `preferences.js`, `preferences.xhtml`, [preferences-data.js](../../src/preferences-data.js) | Existing schema editor and new palette/Data Management controls; reviewed import plans, library mapping and post-import field editor refresh |
 
 `researchannotator.palette` contains `{version:1,preset,colors:[...]}`. Each color
 has stable `p_*` identity, current hex, historical aliases, semantic label, archive

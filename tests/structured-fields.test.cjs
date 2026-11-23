@@ -85,7 +85,7 @@ test('annotation review distinguishes missing failed outdated and completed AI v
 });
 
 async function workspaceSetup(){
-    const h=await explorerSetup();vm.runInContext(fs.readFileSync(path.join(__dirname,'..','research-workspace.js'),'utf8'),h.context);h.a.rootURI='file:///test/';
+    const h=await explorerSetup();vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','research-workspace.js'),'utf8'),h.context);h.a.rootURI='file:///test/';
     const workspace=h.context.AnnotaWorkspace,doc=document();doc.documentElement=doc.createElement('root');
     const create=doc.createElement;doc.createElement=tag=>{const el=create(tag);el.remove=function(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(c=>c!==this);this.isConnected=false;};return el;};doc.createXULElement=doc.createElement;doc.createElementNS=(_,tag)=>doc.createElement(tag);
     const toolbar=doc.createElement('toolbar'),tools=doc.createElement('menupopup'),chat=doc.createElement('toolbarbutton'),sync=doc.createElement('toolbarbutton');toolbar.id='zotero-tabs-toolbar';tools.id='menu_ToolsPopup';chat.id='annota-tb-chat';sync.id='zotero-tb-sync';toolbar.append(chat,sync);doc.documentElement.append(toolbar,tools);
@@ -132,7 +132,7 @@ function zoteroNormalizeManagedHTML(html) {
 }
 
 async function explorerSetup(){
-    const h=await researchSetup();vm.runInContext(fs.readFileSync(path.join(__dirname,'..','research-explorer.js'),'utf8'),h.context);
+    const h=await researchSetup();vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','research-explorer.js'),'utf8'),h.context);
     const explorer=h.context.AnnotaExplorer;
     h.context.Zotero.Collections.get=id=>id===50?{key:'COLL0001',name:'Research collection'}:null;
     h.context.Zotero.Collections.getByLibrary=()=>[{key:'COLL0001',name:'Research collection'}];
@@ -202,7 +202,7 @@ test('Explorer saved searches persist create edit duplicate rename delete with s
     const h=await explorerSetup(),saved=h.explorer.save(h.query,{name:'Original'});
     const edited=h.explorer.save({...saved,text:'Changed'},{id:saved.id,name:'Renamed'});assert.equal(edited.id,saved.id);
     const duplicate={...edited};delete duplicate.id;const copied=h.explorer.save(duplicate,{name:'Copy'});assert.notEqual(copied.id,saved.id);
-    vm.runInContext(fs.readFileSync(path.join(__dirname,'..','research-explorer.js'),'utf8'),h.context);assert.equal(h.context.AnnotaExplorer.saved().length,2);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','research-explorer.js'),'utf8'),h.context);assert.equal(h.context.AnnotaExplorer.saved().length,2);
     h.context.AnnotaExplorer.deleteSearch(saved.id);assert.equal(h.context.AnnotaExplorer.saved()[0].id,copied.id);
 });
 
@@ -445,7 +445,7 @@ async function researchSetup() {
         async search() { return [...h.items.values()].filter(i => this.type === 'note' ? i.isNote?.() && !i.deleted : this.type === 'attachment' ? i.isAttachment?.() : i.isAnnotation?.()).map(i=>i.id); }
     };
     h.context.Zotero.Collections = { getByLibraryAndKey: () => ({ getChildItems: () => [40] }) };
-    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'research-notes.js'), 'utf8'), h.context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'research-notes.js'), 'utf8'), h.context);
     const research = h.context.AnnotaResearchNotes;
     const scope = { kind:'library', library:{type:'user',id:'1234'} };
     const checkpoints = [];
@@ -695,7 +695,7 @@ function setup(fields = schema) {
             Items: { getAsync: async () => item, getByLibraryAndKey: () => item } } };
     vm.createContext(context);
     for (const name of ['bootstrap.js', 'card-fields.js']) {
-        vm.runInContext(fs.readFileSync(path.join(__dirname, '..', name), 'utf8'), context);
+        vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', name), 'utf8'), context);
     }
     const a = context.Annota, c = context.AnnotaCardFields;
     const realSync = a._syncPaperResearchNote;
@@ -1477,7 +1477,7 @@ test('Global Fields preferences reuse the visual editor for renaming, adding and
     doc.getElementById = id => nodes[id] || null; doc.querySelectorAll = () => [];
     h.context.document = doc; h.context.requestAnimationFrame = () => {};
     h.context.Zotero.Annota = h.a;
-    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'preferences.js'), 'utf8'), h.context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'preferences.js'), 'utf8'), h.context);
     const label = doc.created.find(el => el.className === 'annota-input annota-fe-label');
     assert.ok(label); label.value = 'Renamed'; label.events.input[0]();
     assert.equal(h.a.getGlobalFields()[0].id, 'g_original');
@@ -1654,7 +1654,7 @@ test('historical comment migration failure retains sources and old migration API
 });
 
 test('Global Fields preferences immediately follow Highlight Colors with matching card styling', () => {
-    const xml = fs.readFileSync(path.join(__dirname, '..', 'preferences.xhtml'), 'utf8');
+    const xml = fs.readFileSync(path.join(__dirname, '..', 'src', 'preferences.xhtml'), 'utf8');
     const section = xml.match(/<html:section class="annota-card" id="annota-highlight-colors-section">[\s\S]*?<\/html:section>\s*<html:section class="annota-card">\s*<html:h3 class="annota-card-title">Global Fields<\/html:h3>/);
     assert.ok(section); assert.equal((xml.match(/id="annota-global-fields-editor"/g) || []).length, 1);
 });
@@ -1697,7 +1697,7 @@ function milestoneSetup() {
         files.set(path, clone(value));
     };
     h.context.IOUtils.makeDirectory = async () => {};
-    for (const file of ['palette.js', 'data-manager.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), h.context);
+    for (const file of ['palette.js', 'data-manager.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8'), h.context);
     const palette = h.context.AnnotaPalette, data = h.context.AnnotaData;
     palette.ensure();
     return { ...h, palette, data, library, parent, files };
@@ -2066,7 +2066,7 @@ test('Data Management renders all six controls, previews a file and applies only
     doc.defaultView.Event = class { constructor(type) { this.type = type; } };
     doc.dispatchEvent = () => {}; h.context.requestAnimationFrame = () => {}; h.context.document = doc;
     h.context.Zotero.Annota = h.a;
-    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'preferences-data.js'), 'utf8'), h.context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'preferences-data.js'), 'utf8'), h.context);
     const actions = nodes['annota-data-actions'].children;
     assert.deepEqual(actions.map(node => node.textContent), ['Export Settings', 'Import Settings', 'Export Research Data', 'Import Research Data', 'Create Complete Backup', 'Restore Complete Backup']);
     const payload = await h.data.export('settings'); payload.settings.prefs.model = 'Imported through UI';
@@ -2370,7 +2370,7 @@ function compactPreferences(h = milestoneSetup()) {
         'annota-data-apply', 'annota-data-libraries', 'annota-data-status', 'annota-data-preview']) add(id);
     h.context.document = doc; h.context.Zotero.Annota = h.a; h.context.requestAnimationFrame = () => {};
     doc.defaultView.confirm = () => false;
-    for (const file of ['preferences.js', 'preferences-data.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), h.context);
+    for (const file of ['preferences.js', 'preferences-data.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8'), h.context);
     return { ...h, doc, nodes, panel, parking, rows: () => nodes['annota-palette-editor'].querySelectorAll('.annota-palette-row') };
 }
 
@@ -2433,7 +2433,7 @@ test('reorder handles support keyboard movement and drag ordering while preservi
 });
 
 test('collapsible preferences retain every established configuration element once inside the parked editor', () => {
-    const xml = fs.readFileSync(path.join(__dirname, '..', 'preferences.xhtml'), 'utf8');
+    const xml = fs.readFileSync(path.join(__dirname, '..', 'src', 'preferences.xhtml'), 'utf8');
     for (const id of ['annota-kind', 'annota-label', 'annota-semantic-label', 'annota-fields-editor', 'annota-fields', 'annota-template', 'annota-prompt', 'annota-prompt-clear', 'annota-color-label-layout', 'annota-paper-note-sort']) {
         assert.equal((xml.match(new RegExp('id="' + id + '"', 'g')) || []).length, 1);
     }
@@ -2474,7 +2474,7 @@ test('permanent deletion rechecks active work after asynchronous usage inspectio
 
 
 test('all five layout values are selectable without changing stored legacy preferences', () => {
-    const source = fs.readFileSync(path.join(__dirname, '..', 'preferences.xhtml'), 'utf8');
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'preferences.xhtml'), 'utf8');
     for (const layout of ['single', 'wrap', 'stack', 'slanted', 'vertical']) {
         assert.equal((source.match(new RegExp('option value="' + layout + '"', 'g')) || []).length, 1);
         const h = milestoneSetup(); h.prefs.set('researchannotator.colorLabelLayout', layout);
@@ -2526,7 +2526,7 @@ async function infrastructureSetup({ initialize = true } = {}) {
     };
     h.context.Services = { prompt: { confirm: () => true, alert() {} } };
     h.item.saveTx = async () => {}; h.parent.libraryID = 1;
-    for (const name of ['review.js', 'infrastructure.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '..', name), 'utf8'), h.context);
+    for (const name of ['review.js', 'infrastructure.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', name), 'utf8'), h.context);
     const infra = h.context.AnnotaInfrastructure;
     infra.installStorage();
     if (initialize) {
@@ -2868,7 +2868,7 @@ function globalPreferencesFixture(h = globalSetup(setup(), [{id:'g_instruction',
     const doc=treeDocument(),host=doc.createElement('div'),textarea=doc.createElement('textarea'),status=doc.createElement('div');
     const nodes={'annota-global-fields-editor':host,'annota-global-fields':textarea,'annota-global-fields-status':status};
     doc.getElementById=id=>nodes[id]||null;h.context.document=doc;h.context.requestAnimationFrame=()=>{};h.context.Zotero.Annota=h.a;
-    vm.runInContext(fs.readFileSync(path.join(__dirname,'..','preferences.js'),'utf8'),h.context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','preferences.js'),'utf8'),h.context);
     return {...h,doc,host,textarea,status};
 }
 
@@ -2932,7 +2932,7 @@ test('simplifying an existing managed note retains its identity and positioned u
 });
 
 test('native workspace loads popup theme support and opaque backgrounds without custom dropdown infrastructure',()=>{
-    const source=fs.readFileSync(path.join(__dirname,'..','research-workspace.xhtml'),'utf8');
+    const source=fs.readFileSync(path.join(__dirname, '..', 'src','research-workspace.xhtml'),'utf8');
     assert.match(source,/xml-stylesheet href="chrome:\/\/global\/skin\/"/);assert.match(source,/xml-stylesheet href="chrome:\/\/zotero\/skin\/zotero.css"/);
     assert.match(source,/#ContentSelectDropdownPopup\s*\{[^}]*background:Canvas !important; color:CanvasText !important/);
 });
@@ -2945,7 +2945,7 @@ test('Tools submenu owns all three independent commands without duplicating tool
 });
 
 test('settings hierarchy retains unique legacy controls and makes layout/order permanently visible',()=>{
-    const source=fs.readFileSync(path.join(__dirname,'..','preferences.xhtml'),'utf8');
+    const source=fs.readFileSync(path.join(__dirname, '..', 'src','preferences.xhtml'),'utf8');
     const visible=[...source.matchAll(/<html:section class="annota-settings-visible">([\s\S]*?)<\/html:section>/g)].map(m=>m[1]).join("\n");
     assert.match(visible,/id="annota-color-label-layout"/);assert.match(visible,/id="annota-paper-note-sort"/);assert.doesNotMatch(visible,/<html:details/);
     assert.match(source,/Advanced popup heading/);assert.match(source,/Advanced legacy prompt and layout/);assert.match(source,/<html:section id="annota-ai-trigger-section"[^>]*hidden="hidden">[\s\S]*name="annota-trigger"/);
@@ -3068,7 +3068,7 @@ async function networkSetup(){
     const h=await explorerSetup();
     h.second={...h.item,id:10,key:'ANNKEY02',annotationText:'Second scientific finding'};h.items.set(10,h.second);h.parent.getAnnotations=()=>[h.item.id,h.second.id];h.parent.isPDFAttachment=()=>true;
     h.otherPublication={...h.publication,id:41,key:'PAPER002',getDisplayTitle:()=> 'Second publication',getAttachments:()=>[]};h.items.set(41,h.otherPublication);
-    vm.runInContext(fs.readFileSync(path.join(__dirname,'..','research-network.js'),'utf8'),h.context);const network=h.context.AnnotaNetwork;network.install();
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','research-network.js'),'utf8'),h.context);const network=h.context.AnnotaNetwork;network.install();
     return {...h,network,aRef:network.ref(h.item),bRef:network.ref(h.second),pubRef:network.ref(h.publication),otherPubRef:network.ref(h.otherPublication)};
 }
 
@@ -3082,7 +3082,7 @@ async function groundedSetup(){
     h.context.Zotero.Reader={open:async(id,location)=>({itemID:id,location})};h.a._syncPaperResearchNote=async()=>{};h.a.findReaderFor=()=>null;
     h.context.AnnotaChat={_history:[],loadHistory:async()=>{},keepHistory:()=>true,touch(){},writeHistory:async()=>{},refresh(){},provider:()=> 'openai',chatModel:()=>'',chatEffort:()=>'',modelLabel:()=> 'fixture'};
     h.a.complete=async request=>{provider++;const p=JSON.parse(request.context).sourcePassages[0];return 'Source findings: cyclic loading accelerates cracks ['+p.id+']';};
-    for(const name of ['research-chat.js','evidence-capture.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',name),'utf8'),h.context);
+    for(const name of ['research-chat.js','evidence-capture.js'])vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src',name),'utf8'),h.context);
     const chat=h.context.AnnotaResearchChat,capture=h.context.AnnotaEvidenceCapture;await chat.install();capture.install();
     const sources=await chat.allSources(h.scope),source=sources[0],index=()=>chat.indexSource(source,h.control),locate=()=>{h.a.findReaderFor=()=>({});h.a.getPDFDocument=()=>({numPages:1,getPageLabels:async()=>['iv'],getPageData:async()=>({chars:[...('Fatigue crack propagation increases under cyclic loading.')].map((c,i)=>({c,inlineRect:[10+i*2,20,12+i*2,30],lineBreakAfter:i===29}))})});};
     const message=async()=>{locate();await chat.indexSource(source,h.control,{coordinates:true});const passages=Object.values(chat.index.documents)[0].passages;return {id:'answer-1',role:'assistant',grounded:true,citations:passages,content:'Finding ['+passages[0].id+']'};};
@@ -3120,7 +3120,7 @@ test('rebuildable local indexes are excluded from complete research exports but 
 test('minimal note defaults suppress Source/Page/Tags and preserve publication identity once per group',async()=>{const h=await researchSetup();const config=h.research.configuration(h.scope,{type:'color',colorIDs:[h.palette.resolve('#ffd400').id]});const c=await h.infra.notes.compileAnnotations([h.item],config);assert.match(c.html,/Paper title/);assert.doesNotMatch(c.html,/<strong>(Source|Page|Tags):/);for(const key of ['citation','page','tags','authors','year'])assert.equal(config.include[key],false);});
 test('batch simplified defaults require preview, preserve explicit settings until confirmation, and back up before queued changes',async()=>{const h=await researchSetup();const config=h.research.configuration(h.scope,{type:'color',colorIDs:[h.palette.resolve('#ffd400').id]},{include:{page:true,citation:true}});await h.infra.notes.configure(config);const preview=h.research.previewDefaults([config.id]);assert.equal(h.infra.notes.config(config.library,config.scope).include.page,true);assert.equal(preview[0].after.page,false);h.infra.jobs.handlers.set('note-defaults',{handler:()=>{}});h.infra.jobs.kick=()=>{};const result=await h.research.applyDefaults(preview);assert.ok(result.backup);assert.equal(h.infra.notes.config(config.library,config.scope).include.page,true);assert.equal(h.infra.state.jobs[result.id].type,'note-defaults');});
 test('stale batch defaults preview cannot overwrite settings edited in another view',async()=>{const h=await researchSetup();const c=h.research.configuration(h.scope,{type:'pdf'});await h.infra.notes.configure(c);const p=h.research.previewDefaults([c.id]);await h.infra.notes.configure({...c,include:{...c.include,page:true}});await assert.rejects(h.research.applyDefaults(p),/changed/);});
-test('grounded index restart recovers stable evidence identities and original citation excerpts',async()=>{const h=await groundedSetup(),m=await h.message(),id=m.citations[0].id;vm.runInContext(fs.readFileSync(path.join(__dirname,'..','research-chat.js'),'utf8'),h.context);const restarted=h.context.AnnotaResearchChat;await restarted.load();assert.equal(Object.values(restarted.index.documents)[0].passages[0].id,id);assert.equal((await restarted.citationStatus(m.citations[0])).status,'available');});
+test('grounded index restart recovers stable evidence identities and original citation excerpts',async()=>{const h=await groundedSetup(),m=await h.message(),id=m.citations[0].id;vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','research-chat.js'),'utf8'),h.context);const restarted=h.context.AnnotaResearchChat;await restarted.load();assert.equal(Object.values(restarted.index.documents)[0].passages[0].id,id);assert.equal((await restarted.citationStatus(m.citations[0])).status,'available');});
 test('large local passage keyword index bounds retrieved context and records measured responsiveness',async()=>{const h=await groundedSetup();await h.index();const doc=Object.values(h.chat.index.documents)[0],base=doc.passages[0];doc.passages=Array.from({length:12000},(_,i)=>({...base,id:'E_perf_'+i,text:'Fatigue specimen '+i+' cyclic propagation measured locally'}));const t=performance.now();h.chat.termIndex();const index=performance.now()-t,start=performance.now(),r=await h.chat.retrieve('fatigue propagation',h.scope,{budget:6000,limit:8});assert.ok(r.passages.length<=8);assert.ok(r.characters<=6000);console.log('Chat performance: 12000 passages; index '+index.toFixed(1)+'ms; retrieval '+(performance.now()-start).toFixed(1)+'ms; index JSON '+Buffer.byteLength(JSON.stringify(h.chat.index))+' bytes');});
 test('provider integration uses the existing cancellable token and removes cancellation listeners',async()=>{const h=await groundedSetup();let aborted=false;h.a.complete=async(_,opts)=>{opts.cancel.onCancel(()=>{aborted=true;});for(const fn of h.infra.jobs.listeners)fn({id:'CANCEL',state:'cancelled'});throw Error('Aborted');};await assert.rejects(h.chat.complete({}, {},{id:'CANCEL'}),e=>e.stopped===true);assert.equal(aborted,true);assert.equal(h.chat.tokens.size,0);});
 test('unchanged closed PDFs are not re-extracted merely because capture coordinates were requested',async()=>{const h=await groundedSetup();await h.index();await h.chat.indexSource(h.source,h.control,{coordinates:true});assert.equal(h.stats().extraction,1);});
@@ -3140,7 +3140,7 @@ test('capture assignments use stable field IDs and never confuse same-named fiel
 test('embedding approval is bound to the configured destination/model and cannot drift between batches',async()=>{const h=await groundedSetup();await h.index();h.prefs.set('researchannotator.chatEmbeddingModel','approved');const doc=Object.values(h.chat.index.documents)[0],base=doc.passages[0];doc.passages=Array.from({length:25},(_,i)=>({...base,id:'E_scope_'+i}));const signature=h.chat.embeddingConfig().signature;let calls=0;h.context.Zotero.HTTP={request:async()=>{calls++;h.prefs.set('researchannotator.chatEmbeddingEndpoint','https://unapproved.invalid/embeddings');return {response:{embeddings:Array.from({length:24},()=>[1,0])}};}};await assert.rejects(h.chat.embedDocument(h.source.ref,true,h.control,signature),/configuration changed/);assert.equal(calls,1);await assert.rejects(h.chat.retrieve('fatigue',h.scope,{mode:'hybrid',consent:true,embeddingSignature:signature}),/configuration changed/);assert.equal(calls,1);});
 test('historical Chat collection selections remain scoped when continuing an older conversation',async()=>{const h=await groundedSetup();await h.index();delete h.conversation.groundedSources;h.conversation.scope='library';h.conversation.collections=['COLL0001'];h.conversation.subcollections=false;await h.chat.answer(h.conversation);assert.equal(h.conversation.groundedSources.kind,'collections');assert.deepEqual(clone(h.conversation.messages[0].groundedRequest.sources.keys),['COLL0001']);assert.equal(h.conversation.groundedSources.subcollections,false);});
 
-async function refinementSetup(){const h=await researchSetup();h.context.Zotero.Items.get=id=>h.items.get(id);h.context.Zotero.Items.getByLibraryAndKey=(libraryID,key)=>[...h.items.values()].find(i=>i.key===key&&i.libraryID===libraryID);vm.runInContext(fs.readFileSync(path.join(__dirname,'..','note-presentation.js'),'utf8'),h.context);return {...h,presentation:h.context.AnnotaNotePresentation};}
+async function refinementSetup(){const h=await researchSetup();h.context.Zotero.Items.get=id=>h.items.get(id);h.context.Zotero.Items.getByLibraryAndKey=(libraryID,key)=>[...h.items.values()].find(i=>i.key===key&&i.libraryID===libraryID);vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','note-presentation.js'),'utf8'),h.context);return {...h,presentation:h.context.AnnotaNotePresentation};}
 test('PDF default titles use the exact parent publication title without a suffix',async()=>{const h=await refinementSetup();h.publication.getField=()=> 'Exact title: α & fatigue';assert.equal(h.presentation.pdfTitle(h.parent),'Exact title: α & fatigue');assert.equal(h.infra.notes.pdfConfig(h.parent,1).title,'Exact title: α & fatigue');});
 test('multiple PDF attachments retain distinct managed identities with the same exact publication title',async()=>{const h=await refinementSetup(),second={...h.parent,id:19,key:'PDFKEY02'};const a=h.infra.notes.pdfConfig(h.parent,1),b=h.infra.notes.pdfConfig(second,1);assert.equal(a.title,b.title);assert.notEqual(h.infra.notes.identity(a.library,a.scope),h.infra.notes.identity(b.library,b.scope));assert.notEqual(a.id,b.id);});
 test('field titles resolve stable field IDs and selected categorical labels',async()=>{const h=await refinementSetup();h.research.fields=()=>[{id:'F',label:'Experimental method',type:'multiselect'}];h.a.categoryLabels=()=>['Fatigue testing'];assert.equal(h.presentation.title(h.scope,{type:'field',fieldID:'F',values:['VALUE']}),'Experimental method — Fatigue testing');});
@@ -3328,7 +3328,7 @@ test('Network managed question/topic notes retain inclusion options and incomple
 });
 
 test('Network restart retains explicit data without automatic AI discovery',async()=>{
-    const h=await networkSetup();await h.network.saveRelationship({source:h.aRef,target:h.bRef,type:'supports'});const saved=clone(h.infra.state);h.network.stop();vm.runInContext(fs.readFileSync(path.join(__dirname,'..','research-network.js'),'utf8'),h.context);h.context.AnnotaInfrastructure.state=saved;const network=h.context.AnnotaNetwork;network.install();
+    const h=await networkSetup();await h.network.saveRelationship({source:h.aRef,target:h.bRef,type:'supports'});const saved=clone(h.infra.state);h.network.stop();vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','research-network.js'),'utf8'),h.context);h.context.AnnotaInfrastructure.state=saved;const network=h.context.AnnotaNetwork;network.install();
     assert.equal(network.relationships(h.aRef).total,1);assert.equal(h.infra.jobs.list().filter(j=>j.type==='network-suggestions').length,0);
 });
 
@@ -3431,7 +3431,7 @@ test('PDF batch requests cannot accidentally create a standalone managed note',a
 test('batch defaults may update PDF request settings but cannot materialize the request as a note',async()=>{const h=await researchSetup(),config=h.research.configuration(h.scope,{type:'pdf'},{include:{citation:true}});await h.infra.notes.configure(config);const before=h.html(),preview=h.research.previewDefaults([config.id]);await h.research.runDefaults({preview,backup:'B'},h.control,{checkpoint:{}});assert.equal(h.html(),before);assert.equal([...h.items.values()].filter(i=>i.isNote?.()).length,1);assert.equal(h.infra.notes.config(config.library,config.scope).include.citation,false);});
 test('bulk mode selection excludes non-note PDF request configurations',async()=>{const h=await researchSetup(),config=h.research.configuration(h.scope,{type:'pdf'});await h.infra.notes.configure(config);assert.throws(()=>h.research.previewModes([config.id],'auto'),/existing managed notes/);});
 test('changed paid retry settings require explicit approval before a new request identity is made',async()=>{const h=await groundedSetup();await h.index();h.conversation.retrieval={mode:'semantic'};await h.chat.answer(h.conversation);const id=h.conversation.messages[0].requestID;h.conversation.retrieval={mode:'keyword'};await assert.rejects(h.chat.retryAnswer(h.conversation),/Explicit retry approval/);assert.equal(h.conversation.messages[0].requestID,id);assert.equal(h.stats().provider,0);});
-test('temporary history read errors can recover without restarting or overwriting the original',async()=>{const h=await infrastructureSetup();vm.runInContext(fs.readFileSync(path.join(__dirname,'..','chat.js'),'utf8'),h.context);const chat=h.context.AnnotaChat;h.prefs.set('researchannotator.chatKeepHistory',true);const file=chat.historyFile();h.files.set(file,{version:1,conversations:[]});const read=h.context.IOUtils.readJSON;h.context.IOUtils.readJSON=async()=>{throw Error('Temporary read failure');};await assert.rejects(chat.loadHistory(),/original is preserved/);assert.equal(chat._historyLoading,null);assert.equal(chat._history,null);h.context.IOUtils.readJSON=read;assert.deepEqual(clone(await chat.loadHistory()),[]);});
+test('temporary history read errors can recover without restarting or overwriting the original',async()=>{const h=await infrastructureSetup();vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','chat.js'),'utf8'),h.context);const chat=h.context.AnnotaChat;h.prefs.set('researchannotator.chatKeepHistory',true);const file=chat.historyFile();h.files.set(file,{version:1,conversations:[]});const read=h.context.IOUtils.readJSON;h.context.IOUtils.readJSON=async()=>{throw Error('Temporary read failure');};await assert.rejects(chat.loadHistory(),/original is preserved/);assert.equal(chat._historyLoading,null);assert.equal(chat._history,null);h.context.IOUtils.readJSON=read;assert.deepEqual(clone(await chat.loadHistory()),[]);});
 test('bulk mode selection uses library-aware identities when PDF keys coincide',async()=>{const h=await researchSetup();await h.a._syncPaperResearchNote(h.item);const c=h.infra.notes.pdfConfig(h.parent,1),other={...c,library:{type:'group',id:'9090'},noteKey:'GROUP001'};await h.infra.notes.configure(other);assert.throws(()=>h.research.previewModes([c.id],'auto'),/more than one library/);const identity=h.infra.notes.identity(other.library,other.scope),preview=h.research.previewModes([identity],'manual');assert.equal(preview.length,1);assert.equal(preview[0].identity,identity);assert.equal(preview[0].noteKey,'GROUP001');assert.equal(h.infra.notes.config(c.library,c.scope).mode,'auto');});
 test('explicit successful reindex clears the recoverable cache warning',async()=>{const h=await groundedSetup(),file=h.chat.path();h.files.set(file,{version:999,documents:{}});await h.chat.load();assert.ok(h.chat.indexRecoveryIssue);await h.index();assert.equal(h.chat.indexRecoveryIssue,null);assert.equal(Object.keys(h.chat.index.documents).length,1);assert.ok([...h.files.keys()].some(k=>k.includes('chat-index-invalid')));});
 test('runtime notes fail closed when shared infrastructure is unavailable',async()=>{const h=noteHarness(),before=h.html();h.a._managedEngineRequired=true;await assert.rejects(h.a._syncPaperResearchNote(h.item),/existing note is preserved/);assert.equal(h.html(),before);});
@@ -3439,7 +3439,7 @@ test('authored Comment paragraphs remain positioned beside managed entries after
 test('Chat refuses mixed-library source keys rather than resolving them in the wrong library',async()=>{const h=await groundedSetup();h.context.AnnotaChat.convItem=()=>null;h.context.AnnotaChat.conversationOf=()=>h.conversation;const items=[h.publication,{...h.publication,libraryID:99,key:'OTHER001'}],inst={win:{ZoteroPane:{getSelectedLibraryID:()=>1,getSelectedItems:()=>items}}};assert.throws(()=>h.chat.selection(inst,'selected'),/one library at a time/);});
 
 
-async function betaMapperSetup(){const h=await researchSetup();vm.runInContext(fs.readFileSync(path.join(__dirname,'..','color-mapper.js'),'utf8'),h.context);const mapper=h.context.AnnotaColorMapper;mapper.install();h.item.annotationType='highlight';h.item.annotationColor='#123456';return {...h,mapper};}
+async function betaMapperSetup(){const h=await researchSetup();vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','color-mapper.js'),'utf8'),h.context);const mapper=h.context.AnnotaColorMapper;mapper.install();h.item.annotationType='highlight';h.item.annotationColor='#123456';return {...h,mapper};}
 for(const mode of ['auto','manual','static'])test('beta intentional '+mode+' note deletion blocks rebuild until explicit recreation',async()=>{const h=await researchSetup();await h.a._syncPaperResearchNote(h.item);let c=h.infra.notes.pdfConfig(h.parent,1);await h.infra.notes.configure({...c,mode});const key=c.noteKey;await h.research.remove({...c,mode});c=h.infra.notes.pdfConfig(h.parent,1);assert.equal(c.managementDisabled,true);assert.equal(c.mode,mode);await h.a._syncPaperResearchNote({...h.item,manualSync:true});assert.equal(h.infra.notes.pdfConfig(h.parent,1).noteKey,null);assert.ok(c.deletionBackup);await assert.rejects(h.research.resumeManagement(c),/Confirm/);await h.research.resumeManagement(c,{confirmed:true});c=h.infra.notes.pdfConfig(h.parent,1);assert.equal(c.managementDisabled,false);assert.equal(c.mode,mode);assert.ok(c.noteKey);assert.ok(c.noteKey);});
 test('beta direct Zotero trash preserves a durable management tombstone',async()=>{const h=await researchSetup();await h.a._syncPaperResearchNote(h.item);h.note.deleted=true;await h.a._syncPaperResearchNote(h.item);const c=h.infra.notes.pdfConfig(h.parent,1);assert.equal(c.managementDisabled,true);const data=JSON.parse(JSON.stringify(h.infra.state));h.infra.state=data;await h.a._syncPaperResearchNote(h.item);assert.equal(h.infra.notes.pdfConfig(h.parent,1).noteKey,undefined);});
 test('beta stale generation cannot reenable intentionally deleted research configurations',async()=>{const h=await researchSetup(),c=await h.run({type:'color',colorIDs:[h.palette.resolve('#ffd400').id]},{mode:'auto'});await h.research.remove(h.infra.notes.config(c.library,c.scope));await assert.rejects(h.infra.notes.synchronize(c,[h.item],{manual:true}),/stopped|deleted/);assert.equal(h.infra.notes.config(c.library,c.scope).managementDisabled,true);});
@@ -3468,6 +3468,6 @@ test('beta native tag data is explicitly loaded before note rendering or mapping
 test('beta mapping progress reflects durable completed entries before the job completes',async()=>{const h=await betaMapperSetup(),second={...h.item,id:9,key:'ANNKEY02'};h.items.set(9,second);h.parent.getAnnotations=()=>[7,9];h.infra.jobs.kick=()=>{};const scan=await h.mapper.scan(h.scope);scan.groups[0].target=h.palette.resolve('#ff6666').id;const op=await h.mapper.enqueue(h.mapper.preview(scan),{confirmed:true}),progress=[];await h.mapper.run({id:op.id},{...h.control,progress:async value=>progress.push(value)});assert.deepEqual(progress,[.5,1]);});
 test('beta post-mapping review reuses the shared review workflow without generation',async()=>{const h=await betaMapperSetup();let selection,calls=0;h.infra.state.colorMaps={fixture:{id:'fixture',entries:[{pdf:8},{pdf:8}]}};h.context.AnnotaReview.startReview=async()=>calls++;await h.mapper.review('fixture',{ZoteroPane:{selectItems:async ids=>selection=Array.from(ids)}});assert.deepEqual(selection,[8]);assert.equal(calls,1);});
 
-test('beta unloaded Chat shutdown writes never replace persisted conversations with an empty list',async()=>{const h=await infrastructureSetup();vm.runInContext(fs.readFileSync(path.join(__dirname,'..','chat.js'),'utf8'),h.context);const chat=h.context.AnnotaChat,file=chat.historyFile(),saved={version:1,conversations:[{id:'prior',messages:[{role:'user',content:'Preserve prior research'}]}]};h.files.set(file,saved);await chat.writeHistory();assert.deepEqual(clone(h.files.get(file)),saved);assert.equal(chat._history,null);});
-test('beta unreadable or future Chat history remains intact after failed load and subsequent shutdown flush',async()=>{const h=await infrastructureSetup();vm.runInContext(fs.readFileSync(path.join(__dirname,'..','chat.js'),'utf8'),h.context);const chat=h.context.AnnotaChat,file=chat.historyFile(),saved={version:999,conversations:[{id:'future',messages:[]}]};h.files.set(file,saved);await assert.rejects(chat.loadHistory(),/original is preserved/);await chat.writeHistory();assert.deepEqual(clone(h.files.get(file)),saved);});
-test('beta loaded Chat history still persists edits while history-off makes no write',async()=>{const h=await infrastructureSetup();vm.runInContext(fs.readFileSync(path.join(__dirname,'..','chat.js'),'utf8'),h.context);const chat=h.context.AnnotaChat,file=chat.historyFile();chat._history=[{id:'live',messages:[{role:'user',content:'Saved question'}]}];await chat.writeHistory();assert.equal(h.files.get(file).conversations[0].id,'live');const before=clone(h.files.get(file));h.prefs.set('researchannotator.chatKeepHistory',false);chat._history=[];await chat.writeHistory();assert.deepEqual(clone(h.files.get(file)),before);});
+test('beta unloaded Chat shutdown writes never replace persisted conversations with an empty list',async()=>{const h=await infrastructureSetup();vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','chat.js'),'utf8'),h.context);const chat=h.context.AnnotaChat,file=chat.historyFile(),saved={version:1,conversations:[{id:'prior',messages:[{role:'user',content:'Preserve prior research'}]}]};h.files.set(file,saved);await chat.writeHistory();assert.deepEqual(clone(h.files.get(file)),saved);assert.equal(chat._history,null);});
+test('beta unreadable or future Chat history remains intact after failed load and subsequent shutdown flush',async()=>{const h=await infrastructureSetup();vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','chat.js'),'utf8'),h.context);const chat=h.context.AnnotaChat,file=chat.historyFile(),saved={version:999,conversations:[{id:'future',messages:[]}]};h.files.set(file,saved);await assert.rejects(chat.loadHistory(),/original is preserved/);await chat.writeHistory();assert.deepEqual(clone(h.files.get(file)),saved);});
+test('beta loaded Chat history still persists edits while history-off makes no write',async()=>{const h=await infrastructureSetup();vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src','chat.js'),'utf8'),h.context);const chat=h.context.AnnotaChat,file=chat.historyFile();chat._history=[{id:'live',messages:[{role:'user',content:'Saved question'}]}];await chat.writeHistory();assert.equal(h.files.get(file).conversations[0].id,'live');const before=clone(h.files.get(file));h.prefs.set('researchannotator.chatKeepHistory',false);chat._history=[];await chat.writeHistory();assert.deepEqual(clone(h.files.get(file)),before);});

@@ -1,2 +1,7 @@
 # Preserve synthetic PDF bytes and cross-reference offsets on every checkout.
 tests/fixtures/*.pdf binary
+
+# Published runtime bytes include intentional mixed line endings. Never normalize
+# these paths on add or checkout, regardless of core.autocrlf. Keep text diffs.
+/src/* -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+/LICENSE -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

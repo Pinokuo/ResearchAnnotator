@@ -496,7 +496,7 @@ values and concurrently edited fields are preserved. Thirteen isolated tests
 pass; live Zotero validation is pending. The baseline table below is historical:
 batch/review and other out-of-scope gaps still apply. Requirements are unchanged.
 
-Baseline: 2026-11-15. [AGENTS.md](AGENTS.md) is the source of established product
+Baseline: 2026-11-15. [AGENTS.md](../../AGENTS.md) is the source of established product
 requirements. This document records implementation gaps without changing those
 requirements. See [BUGS.md](BUGS.md) for evidence and [TESTING.md](TESTING.md)
 for validation. Runtime observations have not been reproduced in Zotero during

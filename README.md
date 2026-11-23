@@ -8,7 +8,9 @@
 
 **2.43.0-beta.1 · First public beta · Windows / Zotero 10.0.8 verified**
 
-[![Download the beta](docs/assets/brand/nav-download.svg)](https://github.com/Pinokuo/ResearchAnnotator/releases) [![Quick Installation](docs/assets/brand/nav-install.svg)](docs/installation.md#your-first-five-minutes) [![Visual User Guide](docs/assets/brand/nav-guide.svg)](docs/user-guide.md) [![Set Up Local AI](docs/assets/brand/nav-ai.svg)](docs/local-ai.md)
+[![Download ResearchAnnotator Beta 2.43.0-beta.1](docs/assets/brand/nav-download.svg)](https://github.com/Pinokuo/ResearchAnnotator/releases/download/v2.43.0-beta.1/ResearchAnnotator-2.43.0-beta.1.xpi) [![Quick Installation](docs/assets/brand/nav-install.svg)](docs/installation.md#your-first-five-minutes) [![Visual User Guide](docs/assets/brand/nav-guide.svg)](docs/user-guide.md) [![Set Up Local AI](docs/assets/brand/nav-ai.svg)](docs/local-ai.md)
+
+**[Download ResearchAnnotator Beta 2.43.0-beta.1](https://github.com/Pinokuo/ResearchAnnotator/releases/download/v2.43.0-beta.1/ResearchAnnotator-2.43.0-beta.1.xpi)** | [Installation Guide](docs/installation.md) | [Release Notes](https://github.com/Pinokuo/ResearchAnnotator/releases/tag/v2.43.0-beta.1) | [SHA-256 Checksum](https://github.com/Pinokuo/ResearchAnnotator/releases/download/v2.43.0-beta.1/SHA256SUMS.txt)
 
 ![Question → supporting passage → Capture Evidence](docs/assets/demos/chat-evidence.gif)
 
@@ -21,7 +23,7 @@ Connect PDF highlights, configurable manual and AI fields, consolidated research
 ## Quick installation
 
 1. Back up Zotero and export existing ResearchAnnotator data. For older development builds, open Chat once before upgrading and keep the backup.
-2. Obtain the approved `ResearchAnnotator-2.43.0-beta.1.xpi` and compare its [SHA-256](SHA256SUMS.txt).
+2. Obtain the approved `ResearchAnnotator-2.43.0-beta.1.xpi` and compare its [SHA-256](docs/release/2.43.0-beta.1/SHA256SUMS.txt).
 3. In Zotero: Tools → Plugins/Add-ons → gear menu → Install Add-on From File. Select the XPI; restart if requested.
 
 **Download the first public beta from [GitHub Releases](https://github.com/Pinokuo/ResearchAnnotator/releases).** ResearchAnnotator uses main, integrated guides and Issues in this same independent repository. Install later beta XPIs manually; no automatic update is advertised. [Complete instructions](docs/installation.md).
@@ -66,7 +68,7 @@ Use Ollama with a downloaded local model if desired. Chat models write answers; 
 - [Visual user guide](docs/user-guide.md): short workflows, real screenshots and expected results.
 - [Installation and upgrades](docs/installation.md): no repository clone or terminal required.
 - [Local AI setup](docs/local-ai.md): Windows, macOS and Linux instructions, retrieval concepts and transparent optional advisor.
-- [Compatibility and beta limitations](docs/compatibility.md), [release notes](BETA_RELEASE_NOTES.md) and [changelog](CHANGELOG.md).
+- [Compatibility and beta limitations](docs/compatibility.md), [release notes](docs/release/2.43.0-beta.1.md) and [changelog](CHANGELOG.md).
 
 ## Troubleshooting
 
@@ -78,7 +80,7 @@ PDF extraction and keyword indexing stay local. Generation sends the selected co
 
 ## Feedback and contributing
 
-[Report a Bug · Request a Feature · Ask a Question](docs/feedback.md) using the prepared same-repository Issue templates. Share reproducible steps and redacted diagnostics, never credentials, private PDFs or full profiles. [Contribution guide](CONTRIBUTING.md).
+[Report a Bug · Request a Feature · Ask a Question](docs/feedback.md) using the prepared same-repository Issue templates. Share reproducible steps and redacted diagnostics, never credentials, private PDFs or full profiles. [Contribution guide](.github/CONTRIBUTING.md).
 
 Support is optional: [Buy Me a Coffee](https://buymeacoffee.com/researchannotator). No donation popup is added to Zotero.
 
@@ -88,6 +90,6 @@ ResearchAnnotator derives from **Annota by Elliot Quiriconi**. The original copy
 
 ## Development and project status
 
-The independent repository uses main for primary development, GitHub Releases for distribution and same-repository Issues for feedback. [Architecture](ARCHITECTURE.md), [requirements](REQUIREMENTS.md), [roadmap](ROADMAP.md), [backlog](FEATURE_BACKLOG.md) and [testing](TESTING.md) document the implementation. Use the safe reviewed packaging workflow; inherited release scripts are not onboarding commands.
+The independent repository uses main for primary development, GitHub Releases for distribution and same-repository Issues for feedback. [Architecture](docs/development/ARCHITECTURE.md), [requirements](docs/development/REQUIREMENTS.md), [roadmap](docs/development/ROADMAP.md), [backlog](docs/development/FEATURE_BACKLOG.md) and [testing](docs/development/TESTING.md) document the implementation. Use the [repository layout and build guide](docs/development/REPOSITORY_STRUCTURE.md); inherited release scripts are not onboarding commands.
 
 See the [private consolidation status](docs/release/private-consolidation.md) and [future update-feed proposal](docs/release/update-feed-proposal.md). Historical attribution and compatibility data are preserved.

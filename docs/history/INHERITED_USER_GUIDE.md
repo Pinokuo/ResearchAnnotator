@@ -4,7 +4,7 @@ Preserved upstream-era documentation and attribution. It is not the current Rese
 
 # Annota (Zotero 7 → 10)
 
-Current development work adds a Research Knowledge Network inside Research Workspace: explicit evidence relationships, derived topics, research questions, an optional local graph and human-reviewed AI suggestions. Existing annotation, notes, Review, Chat and Automatic/Manual AI behavior remain. See [RESEARCH_KNOWLEDGE_NETWORK.md](RESEARCH_KNOWLEDGE_NETWORK.md) for workflows, limits and validation.
+Current development work adds a Research Knowledge Network inside Research Workspace: explicit evidence relationships, derived topics, research questions, an optional local graph and human-reviewed AI suggestions. Existing annotation, notes, Review, Chat and Automatic/Manual AI behavior remain. See [RESEARCH_KNOWLEDGE_NETWORK.md](../development/RESEARCH_KNOWLEDGE_NETWORK.md) for workflows, limits and validation.
 
 ## Current development candidate: unified workspace
 
@@ -12,17 +12,17 @@ Open **Tools → Research Workspace…** or its toolbar button for Explorer, Not
 Saved Searches and Activity. Adjacent Annotation Review and Research Chat buttons
 keep those existing tools independently accessible. Notes retain user-authored
 blocks with their neighboring highlights during updates. See
-[RESEARCH_WORKSPACE.md](RESEARCH_WORKSPACE.md) for behavior, native smoke evidence
+[RESEARCH_WORKSPACE.md](../development/RESEARCH_WORKSPACE.md) for behavior, native smoke evidence
 and remaining live checks. Broad rebranding and final icon polish remain deferred.
 
 ## Current development candidate: Explorer and managed-note repair
 
 Use **Tools → Research Explorer…** for local annotation search, filters, saved
 searches, guarded edits and filtered note generation. See
-[RESEARCH_EXPLORER.md](RESEARCH_EXPLORER.md). For the recursive managed-note snapshot
+[RESEARCH_EXPLORER.md](../development/RESEARCH_EXPLORER.md). For the recursive managed-note snapshot
 regression, open **Tools → Research Notes… → Repair duplicated snapshots…**. It
 backs up the exact original before conservative repair; a restore action is included.
-Read [MANAGED_NOTE_REPAIR.md](MANAGED_NOTE_REPAIR.md) before repairing affected notes.
+Read [MANAGED_NOTE_REPAIR.md](../development/MANAGED_NOTE_REPAIR.md) before repairing affected notes.
 Native Zotero acceptance is still required; complete rebranding remains deferred.
 
 ## Research Notes development candidate
@@ -30,8 +30,8 @@ Native Zotero acceptance is still required; complete rebranding remains deferred
 Open **Tools → Research Notes…** to preview and generate scoped PDF notes or
 cross-publication notes by structured field/semantic color, manage saved notes and
 view background jobs. AI generation is an explicit dashboard choice; preview makes
-no requests. See [RESEARCH_NOTE_GENERATION.md](RESEARCH_NOTE_GENERATION.md) for the
-current candidate and [TESTING.md](TESTING.md) for required Zotero acceptance.
+no requests. See [RESEARCH_NOTE_GENERATION.md](../development/RESEARCH_NOTE_GENERATION.md) for the
+current candidate and [TESTING.md](../development/TESTING.md) for required Zotero acceptance.
 The inherited documentation below remains historical where superseded by current
 requirements. Complete rebranding stays deferred to final Production Readiness.
 
@@ -66,7 +66,7 @@ alone. Nothing is configured out of the box: Annota stays inert until you give
 at least one color a prompt.
 
 Ready-made prompts are collected in
-[PROMPT-EXAMPLES.txt](PROMPT-EXAMPLES.txt), and Annota works with Mistral
+[PROMPT-EXAMPLES.txt](../examples/PROMPT-EXAMPLES.txt), and Annota works with Mistral
 (default) or any OpenAI-compatible endpoint.
 
 💬 **Annota also lets you chat with what you read** — the open PDF or your
@@ -120,7 +120,7 @@ and you get something else entirely.
 3. Restart Zotero if prompted.
 
 You can also download the `.xpi` directly from the
-[Releases](../../releases) page.
+[Releases](https://github.com/Pinokuo/ResearchAnnotator/releases) page.
 
 ### 🔄 Automatic updates
 
@@ -269,7 +269,7 @@ write that color's prompt.
 - **Clear this color's prompt** switches a color back off.
 - Everything is empty on a fresh install, so nothing happens until you set up at
   least one color. Copyable examples live in
-  [PROMPT-EXAMPLES.txt](PROMPT-EXAMPLES.txt).
+  [PROMPT-EXAMPLES.txt](../examples/PROMPT-EXAMPLES.txt).
 
 #### Custom fields — what you fill in by hand
 
@@ -646,6 +646,6 @@ release after release. The code is not mine. The plugin is. ☕
 
 ## ⚖️ Licence
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](../../LICENSE).
 
-Source-grounded Research Chat and Capture Evidence: [architecture, workflows and limits](RESEARCH_CHAT.md).
+Source-grounded Research Chat and Capture Evidence: [architecture, workflows and limits](../development/RESEARCH_CHAT.md).

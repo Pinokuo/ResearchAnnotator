@@ -52,7 +52,7 @@ payload ownership before execution. Infrastructure schema 1 and field schema 3
 remain; research-job payloads receive shape validation. The baseline below remains
 applicable except where extended by this consumer milestone.
 
-This milestone follows [AGENTS.md](AGENTS.md). Foundation/customization are
+This milestone follows [AGENTS.md](../../AGENTS.md). Foundation/customization are
 functionally accepted by the owner. Color presentation is deferred polish; no
 palette renderer or color CSS changes are part of this milestone. The earlier
 audit sections remain historical evidence, not current defect verification.

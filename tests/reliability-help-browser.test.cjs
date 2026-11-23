@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),{spawnSync}=require('node:child_process'),{pathToFileURL}=require('node:url');
 test('contextual help explains research controls and stays inside its own interface',()=>{
-    const root=path.join(__dirname,'..'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'research-help-'));
+    const root=path.join(__dirname, '..', 'src'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'research-help-'));
     const source=fs.readFileSync(path.join(root,'research-workspace.js'),'utf8');
     const fixture=`<button id="outside">Native Zotero control</button><section id="research"><button id="capture">Capture Evidence</button><label>Retrieval <select id="retrieval"><option>Keyword only</option><option>Semantic</option></select></label><select id="mode"><option>Automatic</option></select><select id="destination-choice"><option>Library root</option></select><input type="checkbox" data-include="comment"/><input id="value"/><details><summary>Advanced</summary></details></section>`;
     const script=`${source}

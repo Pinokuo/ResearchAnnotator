@@ -1,7 +1,7 @@
 param([string]$Tag='SOURCE_2',[string]$RootURI='',[string]$Probe='native-ui-ux-probe.js')
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-if(!$RootURI){$RootURI=([Uri]($root+[IO.Path]::DirectorySeparatorChar)).AbsoluteUri}
+if(!$RootURI){$RootURI=([Uri]((Join-Path $root 'src')+[IO.Path]::DirectorySeparatorChar)).AbsoluteUri}
 $location=[IO.File]::ReadAllText((Join-Path $root 'native-workspace-test-location.json'))|ConvertFrom-Json
 $profilePath=[IO.Path]::GetFullPath($location.profile)
 $fixtureRoot=[IO.Path]::GetDirectoryName($profilePath)
@@ -19,7 +19,7 @@ if($unpacked){[IO.File]::Copy($stage,($stage+'.before-ui-'+$Tag),$false)}
 $installedXPI=Join-Path $profilePath 'extensions\researchannotator@pino.xpi'
 if(!$unpacked -and !(Test-Path -LiteralPath $installedXPI)){throw 'Installed test add-on unavailable'}
 $constants='var UI_UX_ROOT='+($RootURI|ConvertTo-Json -Compress)+',UI_UX_REPORT='+($report|ConvertTo-Json -Compress)+',UI_UX_PREVIOUS='+((Join-Path $root 'NATIVE_GROUNDED_RELEASE_XPI.json')|ConvertTo-Json -Compress)+',UI_UX_SCREENSHOTS='+($screens|ConvertTo-Json -Compress)+';'
-$bootstrapText=[IO.File]::ReadAllText((Join-Path $root 'bootstrap.js'))
+$bootstrapText=[IO.File]::ReadAllText((Join-Path $root 'src/bootstrap.js'))
 if($RootURI.StartsWith('jar:file:')){
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $packageURI=[Uri]($RootURI.Substring(4).TrimEnd('!/'))
