@@ -1,6 +1,6 @@
 # Beta feedback
 
-Intended tracker: GitHub Issues in the existing `Pinokuo/ResearchAnnotator` repository. Issues are already enabled; access remains private until a separately approved visibility decision. The local templates support Report a Bug, Request a Feature and Ask a Question. No separate distribution repository is currently planned.
+Use [GitHub Issues](https://github.com/Pinokuo/ResearchAnnotator/issues/new/choose) in this same repository for Report a Bug, Request a Feature or Ask a Question. No separate distribution repository is used.
 
 For a bug, provide extension version, Zotero version, OS, reproducible steps, expected/actual behavior and whether you can reproduce with a synthetic/public PDF. State whether the AI provider is local or external without sharing credentials. For capture/navigation issues, distinguish wrong attachment, wrong page and approximate passage location.
 

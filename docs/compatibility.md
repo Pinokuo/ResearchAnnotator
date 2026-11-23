@@ -9,7 +9,7 @@
 | Retrieval | Keyword-only works without embeddings. Optional semantic/hybrid needs a separately configured embedding model and approval. Retrieval is selective, not exhaustive. |
 | PDF locations | Exact navigation/capture requires reliable locations and matching fingerprints. Unsupported/unresolved passages are reported; page fallback is not exact passage navigation. |
 | PDF imports | No automatic import of embedded annotations. Native transfer can modify PDF bytes, so use Zotero's workflow on a copy and rescan. |
-| Updates | Manual beta XPI installation. The verified artifact's feed URL points into the private repository; no public auto-update service is promised. |
+| Updates | Manual beta XPI installation. The retained feed has no update entries; no automatic update is advertised. |
 | Backup/sync | Research exports, full library backups and local recovery journals differ. Automatic cross-device synchronization is not implemented. |
 | Version warning | Zotero accepts the labelled beta version; Gecko emits a numeric-version-format advisory. |
 

@@ -1,17 +1,40 @@
-ResearchAnnotator 2.43.0 beta 1 integrates structured annotation fields, managed research notes, Explorer, Review, Knowledge Network and source-grounded Research Chat with validated citation capture.
+# ResearchAnnotator 2.43.0-beta.1
 
-This candidate adds persistent intentional note deletion, per-note ordering, inline color management and recoverable bulk highlight color mapping. Recoloring preserves native content and structured research data and does not write PDF files or request AI.
+First public beta for structured literature research inside Zotero: semantic highlights, manual/AI fields, Annotation Review, managed research notes, Explorer, saved searches, persistent jobs, Knowledge Network and source-grounded Research Chat with validated evidence capture.
 
-Install the XPI through Zotero's Plugins/Add-ons manager. Existing ResearchAnnotator identities and data keys are retained. The beta uses a private-repository update URL; public automatic updates are not available. Install later reviewed beta XPIs manually. Back up your library and export research data before beta testing.
+This beta adds recoverable Bulk Highlight Color Mapping, persistent intentional note deletion with explicit recreation, per-note color ordering and inline color management. Native Comments, Tags, structured data and PDF files remain independent of recoloring. Repository documentation consolidation does not change the tested XPI.
 
-Native verification is limited to Windows/Zotero 10.0.8. Other declared-compatible versions/platforms and group-library permissions remain unverified. Embedded/external PDF annotations are excluded from recoloring; no automatic import or overlapping highlights are created. AI generation requires user-configured providers; keyword retrieval does not require embeddings.
+## Download and install
 
-See [installation](docs/installation.md), [compatibility](docs/compatibility.md) and the [user guide](docs/user-guide.md) for workflows, safeguards and verification limits. This is a pre-release, not a claim of production readiness.
+Download the attached **ResearchAnnotator-2.43.0-beta.1.xpi**, not GitHub's source ZIP. Compare its SHA-256 with the attached **SHA256SUMS.txt** or the value below:
 
-Verification: **465 passing regression tests** and **167 native assertions** on isolated Windows/Zotero 10.0.8, including actual installation, unread-history shutdown, 200 unchanged note rebuilds, permanent deletion and undo after restart.
+```text
+0ee254179983a77cbd1c784da06b15fd0d5ea4ff437c3acbdc241a379947652e  ResearchAnnotator-2.43.0-beta.1.xpi
+```
 
-SHA-256: `0ee254179983a77cbd1c784da06b15fd0d5ea4ff437c3acbdc241a379947652e`.
+In Zotero: Tools → Plugins/Add-ons → gear menu → Install Add-on From File. Select the XPI and restart if requested. Back up your library and export research data before testing.
 
-Before upgrading an older development build, open Chat once and preserve a backup; this beta fixes an inherited unopened-history shutdown bug, but cannot retroactively protect old code before installation.
+**Upgrading an older development build:** open Research Chat once before installation and keep a backup. Older code could clear unopened history at shutdown; the incoming beta cannot retroactively protect that old shutdown or reconstruct an already empty file.
 
-Documentation integration does not change this beta XPI. The repository remains private, the existing draft remains unpublished, and automatic public updates are not enabled. See [private consolidation status](docs/release/private-consolidation.md). Real local qwen2.5:7b generation, retained annotation data and a grounded citation passed in isolated Zotero; other model/platform limitations remain explicit.
+**Manual updates:** install subsequent reviewed beta XPIs manually. The embedded beta feed currently advertises no updates. This release does not enable a new automatic-update mechanism.
+
+## Guides and feedback
+
+- [Installation and safe upgrades](https://github.com/Pinokuo/ResearchAnnotator/blob/main/docs/installation.md)
+- [Visual user guide](https://github.com/Pinokuo/ResearchAnnotator/blob/main/docs/user-guide.md)
+- [Local AI with Ollama](https://github.com/Pinokuo/ResearchAnnotator/blob/main/docs/local-ai.md)
+- [Compatibility and known limitations](https://github.com/Pinokuo/ResearchAnnotator/blob/main/docs/compatibility.md)
+- [Report a Bug / Request a Feature / Ask a Question](https://github.com/Pinokuo/ResearchAnnotator/issues/new/choose)
+- Optional: [support ResearchAnnotator](https://buymeacoffee.com/researchannotator)
+
+## Verified scope and limitations
+
+Native verification: **Windows / Zotero 10.0.8**. The manifest declares Zotero 7.0–10.0.*; other host versions, macOS/Linux, group permissions and the complete hardware/theme matrix are not claimed verified.
+
+Keyword retrieval requires no embedding model. Generation requires a configured provider. A real local qwen2.5:7b instruct-model workflow passed generation, retained manual/native data and a grounded citation on synthetic PDFs; this is not a benchmark or a guarantee for every model. Thinking-model cold starts may exceed request limits. The current error wrapper can mask timeout details, and Retry may appear outside failed-field states; these limitations are documented, not claimed fixed.
+
+Exact citation navigation/highlight capture requires reliable locations and unchanged PDF identities. External/embedded PDF annotations are excluded from mapping; ResearchAnnotator does not automatically import them or modify source PDFs. Native import may modify PDFs, so review Zotero's workflow on a copy. Real embedding-model, fresh Ollama installer/download and timed novice walkthrough acceptance remain limited as documented.
+
+Validation: 465 retained extension regression cases plus one integrated advisor-policy test (**466 passing**), 19 Python advisor tests, prior 167 native assertions and a fresh six-check local-provider/data/citation smoke run. Service/mocked, browser and native evidence are distinguished in [TESTING.md](https://github.com/Pinokuo/ResearchAnnotator/blob/main/TESTING.md). This is a prerelease, not production acceptance or proof of scientific correctness.
+
+ResearchAnnotator derives from Annota by Elliot Quiriconi. Original copyright and the [MIT license](https://github.com/Pinokuo/ResearchAnnotator/blob/main/LICENSE) are preserved in the repository and XPI.

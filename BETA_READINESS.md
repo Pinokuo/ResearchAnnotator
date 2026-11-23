@@ -1,5 +1,7 @@
 # ResearchAnnotator first public beta
 
+Publication note: consult the current README and GitHub Releases for availability. Private/draft descriptions in dated consolidation sections below are historical snapshots. This beta uses manual XPI updates; no feed change accompanies publication.
+
 ## Private documentation consolidation (2026-11-22)
 
 The existing independent repository now consolidates the reviewed visual README, canonical docs/, optional Python advisor and same-repository feedback templates. The beta XPI and application identities/code remain unchanged; repository visibility and the existing draft release remain private/unpublished. See [consolidation status](docs/release/private-consolidation.md) and [update-feed proposal](docs/release/update-feed-proposal.md). Real local instruct-model and mapper checks supplement the previous beta evidence; no production readiness claim is made.

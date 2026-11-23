@@ -1,5 +1,7 @@
 # Private repository consolidation
 
+Historical prepublication record: the private-state descriptions below refer to the consolidation phase. See the current README and release page for publication status.
+
 22 November 2026. ResearchAnnotator uses the existing independent `Pinokuo/ResearchAnnotator` repository, main as its primary remote branch, integrated documentation, same-repository Issues and future GitHub Releases. **The repository remains private and the beta draft remains unpublished.** No separate distribution repository is planned.
 
 ## Preservation and scope

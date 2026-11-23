@@ -28,13 +28,13 @@ Back up your Zotero data directory using your usual backup process. In ResearchA
 
 ### Download availability
 
-The proposed public release is **not published yet**, so there is no working public Download Latest Beta link. Use only an owner-provided reviewed local XPI for this preview. The download button must be connected to the real approved release asset after publication; no guessed URL is presented as live.
+Open [GitHub Releases](https://github.com/Pinokuo/ResearchAnnotator/releases) and choose ResearchAnnotator 2.43.0-beta.1. Download its XPI and SHA256SUMS.txt; the source-code ZIP is not the installable extension.
 
 **Upgrading an older development build:** open Research Chat once before installing and preserve a backup. Older builds could write an unopened history as empty at shutdown. This beta fixes that defect for future shutdowns; it cannot repair an already empty history without a backup.
 
 ## Manual installation — no scripts
 
-1. Download `ResearchAnnotator-2.43.0-beta.1.xpi` from the approved release assets once published. Do not download GitHub's source ZIP as the extension.
+1. Download `ResearchAnnotator-2.43.0-beta.1.xpi` from the release assets. Do not download GitHub's source ZIP as the extension.
 2. Compare its SHA-256 with `SHA256SUMS.txt`. On Windows, open the XPI's Properties and use an installed trusted checksum tool if available; Windows does not provide SHA-256 in the standard Properties dialog. A trusted local GUI hash utility is a no-terminal option. Do not upload the file to a random checksum website.
 3. Open Zotero. Choose Tools → Plugins (called Add-ons in some versions).
 4. Use the gear menu → Install Add-on From File. Select the downloaded XPI, accept Zotero's installation prompt and restart if requested.
@@ -66,6 +66,6 @@ sha256sum ResearchAnnotator-2.43.0-beta.1.xpi
 
 ## Updates and removal
 
-Install later beta XPIs manually after reviewing their release notes. The verified beta contains a required update URL pointing into the private development repository; no publicly working automatic update feed is promised. Its empty feed contains no update entries. Do not replace it with an inherited upstream release feed.
+Install later beta XPIs manually after reviewing their release notes. The verified beta retains its required branding-branch update URL. Its feed contains no update entries, so no automatic update is advertised even when that URL is publicly readable. Do not replace it with an inherited upstream release feed.
 
 Disable or remove the plugin through Zotero's plugin manager. Removing the plugin is not a substitute for restoring a backup, and native annotations already created in Zotero remain library data. Keep exports before changing versions; do not assume an older extension can read newer storage schemas.
